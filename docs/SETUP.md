@@ -37,7 +37,7 @@ npm create tauri-app@latest
 
 When prompted:
 - **Project name**: pick your name
-- **Identifier**: e.g. `com.conductor-lite.app`
+- **Identifier**: e.g. `com.bunyan.app`
 - **Frontend language**: TypeScript / JavaScript
 - **Package manager**: npm (or pnpm/yarn/bun — your choice)
 - **UI template**: React
