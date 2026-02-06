@@ -134,7 +134,11 @@ is_active: boolean;
 /**
  * Current working directory of the pane
  */
-workspace_path: string }
+workspace_path: string; 
+/**
+ * PID of the pane's initial process
+ */
+pane_pid: number }
 export type UpdateRepoInput = { id: string; name: string | null; default_branch: string | null; display_order: number | null; config: JsonValue | null }
 export type Workspace = { id: string; repository_id: string; directory_name: string; branch: string; state: WorkspaceState; created_at: string; updated_at: string }
 /**

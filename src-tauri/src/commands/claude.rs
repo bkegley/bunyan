@@ -352,6 +352,33 @@ pub async fn resume_claude_session(
     let repo_name = repo.name.clone();
     let ws_name = workspace.directory_name.clone();
     let ws_path = ws_path_str.clone();
+
+    // Check if this session is already running in a pane
+    let repo_name_find = repo_name.clone();
+    let ws_name_find = ws_name.clone();
+    let sid = session_id.clone();
+    let existing_pane = tokio::task::spawn_blocking(move || {
+        tmux::find_pane_with_session(&repo_name_find, &ws_name_find, &sid)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    if existing_pane.is_some() {
+        // Session already running — just attach
+        let repo_name_attach = repo_name.clone();
+        let ws_name_attach = ws_name.clone();
+        tokio::task::spawn_blocking(move || {
+            terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        return Ok("attached".to_string());
+    }
+
+    // Session not running — resume it
     let claude_cmd = format!("claude --resume {}", session_id);
 
     // Try to find an idle pane

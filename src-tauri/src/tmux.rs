@@ -175,7 +175,7 @@ pub fn list_panes(repo_name: &str, workspace_name: &str) -> Result<Vec<TmuxPane>
             "-t",
             &target,
             "-F",
-            "#{pane_index}|#{pane_current_command}|#{pane_active}|#{pane_current_path}",
+            "#{pane_index}|#{pane_current_command}|#{pane_active}|#{pane_current_path}|#{pane_pid}",
         ])
         .output()
         .map_err(|e| BunyanError::Process(format!("Failed to list panes: {}", e)))?;
@@ -189,8 +189,8 @@ pub fn list_panes(repo_name: &str, workspace_name: &str) -> Result<Vec<TmuxPane>
     let panes = stdout
         .lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(4, '|').collect();
-            if parts.len() < 4 {
+            let parts: Vec<&str> = line.splitn(5, '|').collect();
+            if parts.len() < 5 {
                 return None;
             }
             Some(TmuxPane {
@@ -198,6 +198,7 @@ pub fn list_panes(repo_name: &str, workspace_name: &str) -> Result<Vec<TmuxPane>
                 command: parts[1].to_string(),
                 is_active: parts[2] == "1",
                 workspace_path: parts[3].to_string(),
+                pane_pid: parts[4].parse().unwrap_or(0),
             })
         })
         .collect();
@@ -213,7 +214,7 @@ pub fn list_all_panes() -> Result<Vec<(String, String, TmuxPane)>> {
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}|#{window_name}|#{pane_index}|#{pane_current_command}|#{pane_active}|#{pane_current_path}",
+            "#{session_name}|#{window_name}|#{pane_index}|#{pane_current_command}|#{pane_active}|#{pane_current_path}|#{pane_pid}",
         ])
         .output()
         .map_err(|e| BunyanError::Process(format!("Failed to list all panes: {}", e)))?;
@@ -226,8 +227,8 @@ pub fn list_all_panes() -> Result<Vec<(String, String, TmuxPane)>> {
     let panes = stdout
         .lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '|').collect();
-            if parts.len() < 6 {
+            let parts: Vec<&str> = line.splitn(7, '|').collect();
+            if parts.len() < 7 {
                 return None;
             }
             Some((
@@ -238,6 +239,7 @@ pub fn list_all_panes() -> Result<Vec<(String, String, TmuxPane)>> {
                     command: parts[3].to_string(),
                     is_active: parts[4] == "1",
                     workspace_path: parts[5].to_string(),
+                    pane_pid: parts[6].parse().unwrap_or(0),
                 },
             ))
         })
@@ -265,6 +267,68 @@ pub fn has_claude_running(repo_name: &str, workspace_name: &str) -> Result<bool>
     let panes = list_panes(repo_name, workspace_name)?;
     let shells = ["zsh", "bash", "fish", "sh"];
     Ok(panes.iter().any(|p| !shells.iter().any(|s| p.command == *s)))
+}
+
+/// Get the claude session ID running in a pane, if any.
+/// Checks the pane PID's own args first (for panes started with an explicit command),
+/// then falls back to checking child processes (for panes started via send-keys to a shell).
+pub fn get_pane_session_id(pane_pid: u32) -> Option<String> {
+    let pid_str = pane_pid.to_string();
+
+    // Check the pane process itself (tmux runs the command directly when using split-window)
+    if let Some(id) = extract_session_id_from_pid(&pid_str) {
+        return Some(id);
+    }
+
+    // Fall back to child processes (pane started as a shell, claude launched via send-keys)
+    let output = Command::new("pgrep")
+        .args(["-P", &pid_str])
+        .output()
+        .ok()?;
+
+    for child_pid in std::str::from_utf8(&output.stdout).ok()?.lines() {
+        if let Some(id) = extract_session_id_from_pid(child_pid) {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
+fn extract_session_id_from_pid(pid: &str) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", pid, "-o", "args="])
+        .output()
+        .ok()?;
+    let args = std::str::from_utf8(&output.stdout).ok()?.trim().to_string();
+    if let Some(id) = args.strip_prefix("claude --resume ") {
+        return Some(id.trim().to_string());
+    }
+    None
+}
+
+/// Find a pane in the workspace that is running a specific claude session ID.
+/// Returns the pane index if found.
+pub fn find_pane_with_session(
+    repo_name: &str,
+    workspace_name: &str,
+    session_id: &str,
+) -> Result<Option<u32>> {
+    let panes = list_panes(repo_name, workspace_name)?;
+    let shells = ["zsh", "bash", "fish", "sh"];
+
+    for pane in &panes {
+        if shells.iter().any(|s| pane.command == *s) {
+            continue;
+        }
+        if let Some(running_session_id) = get_pane_session_id(pane.pane_pid) {
+            if running_session_id == session_id {
+                return Ok(Some(pane.pane_index));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Kill a specific pane.

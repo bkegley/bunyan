@@ -105,6 +105,8 @@ pub struct TmuxPane {
     pub is_active: bool,
     /// Current working directory of the pane
     pub workspace_path: String,
+    /// PID of the pane's initial process
+    pub pane_pid: u32,
 }
 
 /// Info about all panes in a workspace's tmux window.
