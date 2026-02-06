@@ -8,7 +8,7 @@ pub struct Repo {
     pub default_branch: String,
     pub root_path: String,
     pub remote: String,
-    pub display_order: i64,
+    pub display_order: i32,
     pub conductor_config: Option<serde_json::Value>,
     pub created_at: String,
     pub updated_at: String,
@@ -24,7 +24,7 @@ pub struct CreateRepoInput {
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default)]
-    pub display_order: i64,
+    pub display_order: i32,
     pub conductor_config: Option<serde_json::Value>,
 }
 
@@ -40,7 +40,7 @@ pub struct UpdateRepoInput {
     pub id: String,
     pub name: Option<String>,
     pub default_branch: Option<String>,
-    pub display_order: Option<i64>,
+    pub display_order: Option<i32>,
     pub conductor_config: Option<serde_json::Value>,
 }
 
@@ -100,4 +100,21 @@ pub struct ClaudeSession {
     pub workspace_path: String,
     pub workspace_id: Option<String>,
     pub tty: Option<String>,
+}
+
+/// A single session entry from ~/.claude/projects/<path>/sessions-index.json
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ClaudeSessionEntry {
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(alias = "firstPrompt")]
+    pub first_prompt: Option<String>,
+    #[serde(alias = "messageCount")]
+    pub message_count: Option<i32>,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    #[serde(alias = "gitBranch")]
+    pub git_branch: Option<String>,
+    #[serde(alias = "isSidechain")]
+    pub is_sidechain: Option<bool>,
 }

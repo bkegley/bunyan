@@ -33,7 +33,7 @@ impl ProcessDetector for RealProcessDetector {
 
     fn get_pid_cwd(&self, pid: u32) -> Result<String> {
         let output = Command::new("lsof")
-            .args(["-p", &pid.to_string(), "-Fn"])
+            .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
             .output()
             .map_err(|e| BunyanError::Process(format!("Failed to run lsof: {}", e)))?;
 
@@ -44,8 +44,10 @@ impl ProcessDetector for RealProcessDetector {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if let Some(path) = line.strip_prefix("ncwd") {
-                return Ok(path.to_string());
+            if let Some(path) = line.strip_prefix('n') {
+                if path.starts_with('/') {
+                    return Ok(path.to_string());
+                }
             }
         }
 

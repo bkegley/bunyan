@@ -71,13 +71,7 @@ end tell"#,
     Ok(result == "found")
 }
 
-pub fn open_iterm_session(workspace_path: &str, resume: bool) -> Result<()> {
-    let claude_cmd = if resume {
-        "claude --continue"
-    } else {
-        "claude"
-    };
-
+pub fn open_iterm_session(workspace_path: &str, claude_cmd: &str) -> Result<()> {
     let script = format!(
         r#"tell application "iTerm"
     activate
@@ -114,13 +108,7 @@ end tell"#,
     Ok(())
 }
 
-pub fn open_tmux_session(workspace_path: &str, name: &str, resume: bool) -> Result<()> {
-    let claude_cmd = if resume {
-        "claude --continue"
-    } else {
-        "claude"
-    };
-
+pub fn open_tmux_session(workspace_path: &str, name: &str, claude_cmd: &str) -> Result<()> {
     // Check if tmux has any sessions
     let check = Command::new("tmux").args(["list-sessions"]).output();
 
@@ -167,5 +155,21 @@ pub fn open_tmux_session(workspace_path: &str, name: &str, resume: bool) -> Resu
         }
     }
 
+    // Bring the terminal app hosting tmux to the foreground
+    activate_terminal_app();
+
     Ok(())
+}
+
+/// Try to bring the terminal application to the foreground via AppleScript.
+/// Tries iTerm first, then falls back to Terminal.app.
+pub fn activate_terminal_app() {
+    let script = r#"
+        if application "iTerm" is running then
+            tell application "iTerm" to activate
+        else if application "Terminal" is running then
+            tell application "Terminal" to activate
+        end if
+    "#;
+    let _ = Command::new("osascript").args(["-e", script]).output();
 }

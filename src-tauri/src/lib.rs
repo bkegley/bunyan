@@ -44,6 +44,8 @@ pub fn run() {
             commands::settings::get_all_settings,
             commands::claude::get_active_claude_sessions,
             commands::claude::open_claude_session,
+            commands::claude::get_workspace_sessions,
+            commands::claude::resume_claude_session,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw);
 
