@@ -9,7 +9,7 @@ pub struct Repo {
     pub root_path: String,
     pub remote: String,
     pub display_order: i32,
-    pub conductor_config: Option<serde_json::Value>,
+    pub config: Option<serde_json::Value>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -25,7 +25,7 @@ pub struct CreateRepoInput {
     pub remote: String,
     #[serde(default)]
     pub display_order: i32,
-    pub conductor_config: Option<serde_json::Value>,
+    pub config: Option<serde_json::Value>,
 }
 
 fn default_branch() -> String {
@@ -41,7 +41,7 @@ pub struct UpdateRepoInput {
     pub name: Option<String>,
     pub default_branch: Option<String>,
     pub display_order: Option<i32>,
-    pub conductor_config: Option<serde_json::Value>,
+    pub config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]

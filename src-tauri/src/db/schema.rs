@@ -14,7 +14,7 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
             root_path TEXT NOT NULL,
             remote TEXT NOT NULL DEFAULT 'origin',
             display_order INTEGER NOT NULL DEFAULT 0,
-            conductor_config TEXT,
+            config TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )",

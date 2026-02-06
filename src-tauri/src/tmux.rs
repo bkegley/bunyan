@@ -259,9 +259,12 @@ pub fn find_idle_pane(repo_name: &str, workspace_name: &str) -> Result<Option<u3
 }
 
 /// Check if any pane in the workspace window is running claude.
+/// Claude CLI reports its version (e.g. "2.1.33") as pane_current_command,
+/// so we detect it as any pane not running a known shell.
 pub fn has_claude_running(repo_name: &str, workspace_name: &str) -> Result<bool> {
     let panes = list_panes(repo_name, workspace_name)?;
-    Ok(panes.iter().any(|p| p.command == "claude"))
+    let shells = ["zsh", "bash", "fish", "sh"];
+    Ok(panes.iter().any(|p| !shells.iter().any(|s| p.command == *s)))
 }
 
 /// Kill a specific pane.

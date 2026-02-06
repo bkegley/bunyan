@@ -150,7 +150,7 @@ mod tests {
                 default_branch: "main".to_string(),
                 remote: "origin".to_string(),
                 display_order: 0,
-                conductor_config: None,
+                config: None,
             },
         )
         .unwrap()

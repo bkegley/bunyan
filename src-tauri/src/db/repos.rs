@@ -17,7 +17,7 @@ fn row_to_repo(row: &rusqlite::Row) -> rusqlite::Result<Repo> {
         root_path: row.get(4)?,
         remote: row.get(5)?,
         display_order: row.get(6)?,
-        conductor_config: row
+        config: row
             .get::<_, Option<String>>(7)?
             .and_then(|s| serde_json::from_str(&s).ok()),
         created_at: row.get(8)?,
@@ -26,7 +26,7 @@ fn row_to_repo(row: &rusqlite::Row) -> rusqlite::Result<Repo> {
 }
 
 const SELECT_COLS: &str =
-    "id, name, remote_url, default_branch, root_path, remote, display_order, conductor_config, created_at, updated_at";
+    "id, name, remote_url, default_branch, root_path, remote, display_order, config, created_at, updated_at";
 
 pub fn list(conn: &Connection) -> Result<Vec<Repo>> {
     let sql = format!(
@@ -56,13 +56,13 @@ pub fn create(conn: &Connection, input: CreateRepoInput) -> Result<Repo> {
     let id = Uuid::new_v4().to_string();
     let ts = now();
     let config_json = input
-        .conductor_config
+        .config
         .as_ref()
         .map(|v| serde_json::to_string(v))
         .transpose()?;
 
     conn.execute(
-        "INSERT INTO repos (id, name, remote_url, default_branch, root_path, remote, display_order, conductor_config, created_at, updated_at)
+        "INSERT INTO repos (id, name, remote_url, default_branch, root_path, remote, display_order, config, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
@@ -105,8 +105,8 @@ pub fn update(conn: &Connection, input: UpdateRepoInput) -> Result<Repo> {
         values.push(Box::new(*order));
         idx += 1;
     }
-    if let Some(config) = &input.conductor_config {
-        sets.push(format!("conductor_config = ?{}", idx));
+    if let Some(config) = &input.config {
+        sets.push(format!("config = ?{}", idx));
         values.push(Box::new(serde_json::to_string(config)?));
         idx += 1;
     }
@@ -154,7 +154,7 @@ mod tests {
             default_branch: "main".to_string(),
             remote: "origin".to_string(),
             display_order: 0,
-            conductor_config: None,
+            config: None,
         }
     }
 
@@ -202,7 +202,7 @@ mod tests {
                 name: Some("renamed".to_string()),
                 default_branch: None,
                 display_order: Some(5),
-                conductor_config: None,
+                config: None,
             },
         )
         .unwrap();
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn conductor_config_round_trips_as_json() {
+    fn config_round_trips_as_json() {
         let conn = test_db();
         let config = serde_json::json!({
             "scripts": {
@@ -250,13 +250,13 @@ mod tests {
         });
 
         let mut input = sample_input("configured");
-        input.conductor_config = Some(config.clone());
+        input.config = Some(config.clone());
         let created = create(&conn, input).unwrap();
 
-        assert_eq!(created.conductor_config.unwrap(), config);
+        assert_eq!(created.config.unwrap(), config);
 
         let fetched = get(&conn, &created.id).unwrap();
-        assert_eq!(fetched.conductor_config.unwrap(), config);
+        assert_eq!(fetched.config.unwrap(), config);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 ## Workspace Management
 - Figure out cleanup/deletion strategy for old archived worktrees
-- Auto-run setup script from conductor_config on worktree creation (backend doesn't do this yet)
+- Auto-run setup script from config on worktree creation (backend doesn't do this yet)
 
 ## Tmux Session Management
 - Handle tmux session name collisions if two repos have the same name

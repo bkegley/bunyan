@@ -496,6 +496,42 @@ pub async fn open_shell_pane(
     Ok("created".to_string())
 }
 
+/// View a workspace in iTerm — ensures the tmux window exists and attaches
+/// without creating any new panes.
+#[tauri::command]
+#[specta::specta]
+pub async fn view_workspace(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<String, String> {
+    let (workspace, repo, ws_path_str) = {
+        let conn = state.db.lock().unwrap();
+        resolve_workspace_path(&conn, &workspace_id)?
+    };
+
+    let repo_name = repo.name.clone();
+    let ws_name = workspace.directory_name.clone();
+    let ws_path = ws_path_str.clone();
+
+    tokio::task::spawn_blocking(move || {
+        tmux::ensure_workspace_window(&repo_name, &ws_name, &ws_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let repo_name_attach = repo.name.clone();
+    let ws_name_attach = workspace.directory_name.clone();
+    tokio::task::spawn_blocking(move || {
+        terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok("attached".to_string())
+}
+
 /// Kill a specific pane in a workspace window.
 #[tauri::command]
 #[specta::specta]

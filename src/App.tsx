@@ -18,17 +18,17 @@ import {
 import "./App.css";
 
 // ---------------------------------------------------------------------------
-// Local types for conductor_config (JsonValue from bindings is generic)
+// Local types for config (JsonValue from bindings is generic)
 // ---------------------------------------------------------------------------
 
-interface ConductorConfig {
+interface RepoConfig {
   scripts?: { setup?: string; run?: string };
   runScriptMode?: string;
 }
 
-function asConfig(val: JsonValue | null): ConductorConfig | null {
+function asConfig(val: JsonValue | null): RepoConfig | null {
   if (val && typeof val === "object" && !Array.isArray(val)) {
-    return val as unknown as ConductorConfig;
+    return val as unknown as RepoConfig;
   }
   return null;
 }
@@ -72,6 +72,7 @@ interface AppContextType {
   archiveWorkspaceById: (id: string) => Promise<void>;
   openClaude: (workspaceId: string) => Promise<void>;
   openShell: (workspaceId: string) => Promise<void>;
+  viewWorkspace: (workspaceId: string) => Promise<void>;
   killPane: (workspaceId: string, paneIndex: number) => Promise<void>;
   expandedWorkspaceSessions: Set<string>;
   workspaceSessions: Map<string, ClaudeSessionEntry[]>;
@@ -90,13 +91,18 @@ function deriveRepoName(url: string): string {
   return match ? match[1] : "";
 }
 
+const SHELLS = ["zsh", "bash", "fish", "sh"];
+
+function isShellPane(pane: TmuxPane): boolean {
+  return SHELLS.includes(pane.command);
+}
+
 function countClaudePanes(panes: TmuxPane[]): number {
-  return panes.filter((p) => p.command === "claude").length;
+  return panes.filter((p) => !isShellPane(p)).length;
 }
 
 function countShellPanes(panes: TmuxPane[]): number {
-  const shells = ["zsh", "bash", "fish", "sh"];
-  return panes.filter((p) => shells.includes(p.command)).length;
+  return panes.filter((p) => isShellPane(p)).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +219,7 @@ function RepoSection({ repo }: { repo: Repo }) {
 
 function RepoSettingsPanel({ repo }: { repo: Repo }) {
   const ctx = useContext(AppContext);
-  const config = asConfig(repo.conductor_config);
+  const config = asConfig(repo.config);
   const [setupScript, setSetupScript] = useState(
     config?.scripts?.setup ?? "",
   );
@@ -227,7 +233,7 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const newConfig: ConductorConfig = {
+      const newConfig: RepoConfig = {
         scripts: {
           ...(setupScript ? { setup: setupScript } : {}),
           ...(runScript ? { run: runScript } : {}),
@@ -315,6 +321,10 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
   const sessions = ctx.workspaceSessions.get(workspace.id) ?? [];
   const [panesExpanded, setPanesExpanded] = useState(false);
 
+  const handleView = async () => {
+    await ctx.viewWorkspace(workspace.id);
+  };
+
   const handleClaude = async () => {
     await ctx.openClaude(workspace.id);
   };
@@ -361,6 +371,15 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
             >
               {isSessionsExpanded ? "\u25be" : "\u25b8"} History
             </button>
+            {hasAnyPanes && (
+              <button
+                className="shell-btn"
+                onClick={handleView}
+                disabled={isOpening}
+              >
+                View
+              </button>
+            )}
             <button
               className="claude-btn"
               onClick={handleClaude}
@@ -406,19 +425,7 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
       )}
 
       {isSessionsExpanded && !isArchived && (
-        <div className="session-list">
-          {sessions.length === 0 ? (
-            <div className="session-empty">No sessions yet</div>
-          ) : (
-            sessions.map((s) => (
-              <SessionRow
-                key={s.session_id}
-                session={s}
-                workspaceId={workspace.id}
-              />
-            ))
-          )}
-        </div>
+        <SessionList sessions={sessions} workspaceId={workspace.id} />
       )}
     </div>
   );
@@ -432,9 +439,8 @@ function PaneRow({
   workspaceId: string;
 }) {
   const ctx = useContext(AppContext);
-  const isClaude = pane.command === "claude";
-  const shells = ["zsh", "bash", "fish", "sh"];
-  const isShell = shells.includes(pane.command);
+  const isShell = isShellPane(pane);
+  const isClaude = !isShell;
 
   const handleKill = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -485,6 +491,52 @@ function SessionRow({
         {session.message_count ?? 0} msgs
         {dateStr && ` \u00b7 ${dateStr}`}
       </span>
+    </div>
+  );
+}
+
+function SessionList({
+  sessions,
+  workspaceId,
+}: {
+  sessions: ClaudeSessionEntry[];
+  workspaceId: string;
+}) {
+  const realSessions = sessions.filter((s) => (s.message_count ?? 0) > 0);
+  const emptySessions = sessions.filter((s) => (s.message_count ?? 0) === 0);
+  const [emptyExpanded, setEmptyExpanded] = useState(false);
+
+  return (
+    <div className="session-list">
+      {realSessions.length === 0 && emptySessions.length === 0 && (
+        <div className="session-empty">No sessions yet</div>
+      )}
+      {realSessions.map((s) => (
+        <SessionRow
+          key={s.session_id}
+          session={s}
+          workspaceId={workspaceId}
+        />
+      ))}
+      {emptySessions.length > 0 && (
+        <>
+          <button
+            className="empty-sessions-toggle"
+            onClick={() => setEmptyExpanded(!emptyExpanded)}
+          >
+            {emptyExpanded ? "\u25be" : "\u25b8"} {emptySessions.length} empty
+            session{emptySessions.length !== 1 ? "s" : ""}
+          </button>
+          {emptyExpanded &&
+            emptySessions.map((s) => (
+              <SessionRow
+                key={s.session_id}
+                session={s}
+                workspaceId={workspaceId}
+              />
+            ))}
+        </>
+      )}
     </div>
   );
 }
@@ -747,7 +799,7 @@ function App() {
           default_branch: "main",
           remote: "origin",
           display_order: 0,
-          conductor_config: null,
+          config: null,
         });
         setRepos((prev) => [...prev, repo]);
         setExpandedRepos((prev) => new Set([...prev, repo.id]));
@@ -768,7 +820,7 @@ function App() {
         name: null,
         default_branch: null,
         display_order: null,
-        conductor_config: config,
+        config: config,
       });
       setRepos((prev) => prev.map((r) => (r.id === repo.id ? repo : r)));
     },
@@ -843,6 +895,23 @@ function App() {
       setOpeningSession((prev) => new Set([...prev, workspaceId]));
       try {
         await commands.openShellPane(workspaceId);
+      } finally {
+        setOpeningSession((prev) => {
+          const next = new Set(prev);
+          next.delete(workspaceId);
+          return next;
+        });
+        setTimeout(pollSessions, 1000);
+      }
+    },
+    [pollSessions],
+  );
+
+  const handleViewWorkspace = useCallback(
+    async (workspaceId: string) => {
+      setOpeningSession((prev) => new Set([...prev, workspaceId]));
+      try {
+        await commands.viewWorkspace(workspaceId);
       } finally {
         setOpeningSession((prev) => {
           const next = new Set(prev);
@@ -941,6 +1010,7 @@ function App() {
     archiveWorkspaceById: handleArchiveWorkspace,
     openClaude: handleOpenClaude,
     openShell: handleOpenShell,
+    viewWorkspace: handleViewWorkspace,
     killPane: handleKillPane,
     expandedWorkspaceSessions,
     workspaceSessions,

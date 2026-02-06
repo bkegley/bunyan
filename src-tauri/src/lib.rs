@@ -48,6 +48,7 @@ pub fn run() {
             commands::claude::resume_claude_session,
             commands::claude::list_workspace_panes,
             commands::claude::open_shell_pane,
+            commands::claude::view_workspace,
             commands::claude::kill_pane,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw);
