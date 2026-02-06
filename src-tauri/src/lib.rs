@@ -3,9 +3,9 @@ mod db;
 mod error;
 mod git;
 mod models;
-mod process;
 mod state;
 mod terminal;
+mod tmux;
 
 use rusqlite::Connection;
 
@@ -46,6 +46,9 @@ pub fn run() {
             commands::claude::open_claude_session,
             commands::claude::get_workspace_sessions,
             commands::claude::resume_claude_session,
+            commands::claude::list_workspace_panes,
+            commands::claude::open_shell_pane,
+            commands::claude::kill_pane,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw);
 

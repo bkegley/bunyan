@@ -94,12 +94,26 @@ pub struct Setting {
     pub updated_at: String,
 }
 
+/// A tmux pane within the Bunyan-managed tmux server.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct ClaudeSession {
-    pub pid: u32,
+pub struct TmuxPane {
+    /// Pane index within its window
+    pub pane_index: u32,
+    /// Current command running in the pane (e.g. "claude", "zsh")
+    pub command: String,
+    /// Whether this is the currently selected pane in the window
+    pub is_active: bool,
+    /// Current working directory of the pane
     pub workspace_path: String,
-    pub workspace_id: Option<String>,
-    pub tty: Option<String>,
+}
+
+/// Info about all panes in a workspace's tmux window.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct WorkspacePaneInfo {
+    pub workspace_id: String,
+    pub repo_name: String,
+    pub workspace_name: String,
+    pub panes: Vec<TmuxPane>,
 }
 
 /// A single session entry from ~/.claude/projects/<path>/sessions-index.json

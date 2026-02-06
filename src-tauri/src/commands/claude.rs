@@ -2,12 +2,13 @@ use std::path::{Path, PathBuf};
 use tauri::State;
 
 use crate::db;
-use crate::models::{ClaudeSession, ClaudeSessionEntry};
-use crate::process::{ProcessDetector, RealProcessDetector};
+use crate::models::{ClaudeSessionEntry, TmuxPane, WorkspacePaneInfo};
 use crate::state::AppState;
 use crate::terminal;
+use crate::tmux;
 
 /// Resolve the filesystem path for a workspace from DB records.
+/// Returns (workspace, repo, workspace_path_string).
 fn resolve_workspace_path(
     conn: &rusqlite::Connection,
     workspace_id: &str,
@@ -178,73 +179,87 @@ fn read_sessions_from_jsonl(project_dir: &Path) -> Result<Vec<ClaudeSessionEntry
     Ok(sessions)
 }
 
-/// Open a claude session in the preferred terminal (tmux or iTerm).
-fn open_in_terminal(workspace_path: &str, session_name: &str, claude_cmd: &str) -> Result<(), String> {
-    let tmux_check = std::process::Command::new("tmux")
-        .args(["list-sessions"])
-        .output();
+fn has_existing_session(workspace_path: &str) -> bool {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return false,
+    };
 
-    match tmux_check {
-        Ok(output) if output.status.success() => {
-            terminal::open_tmux_session(workspace_path, session_name, claude_cmd)
-        }
-        _ => terminal::open_iterm_session(workspace_path, claude_cmd),
-    }
-    .map_err(|e| e.to_string())
+    let sanitized = workspace_path.replace('/', "-");
+    let sessions_path = home
+        .join(".claude")
+        .join("projects")
+        .join(&sanitized)
+        .join("sessions-index.json");
+
+    sessions_path.exists()
 }
 
+// ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
+
+/// Get pane info for all workspaces that have active tmux windows.
+/// Used by the frontend for polling active sessions.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_active_claude_sessions(
     state: State<'_, AppState>,
-) -> Result<Vec<ClaudeSession>, String> {
-    let pids = tokio::task::spawn_blocking(|| {
-        let detector = RealProcessDetector;
-        detector.find_claude_pids()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-
-    let pids_clone = pids.clone();
-    let pid_info: Vec<(u32, Option<String>, Option<String>)> =
-        tokio::task::spawn_blocking(move || {
-            let detector = RealProcessDetector;
-            pids_clone
-                .into_iter()
-                .filter_map(|pid| {
-                    let cwd = detector.get_pid_cwd(pid).ok()?;
-                    let tty = detector.get_pid_tty(pid).ok().flatten();
-                    Some((pid, Some(cwd), tty))
-                })
-                .collect()
-        })
+) -> Result<Vec<WorkspacePaneInfo>, String> {
+    // Get all panes from the bunyan tmux server
+    let all_panes = tokio::task::spawn_blocking(|| tmux::list_all_panes())
         .await
+        .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    let mut sessions = Vec::new();
-    for (pid, cwd, tty) in pid_info {
-        let cwd = match cwd {
-            Some(c) => c,
-            None => continue,
-        };
-
-        let workspace_id = {
-            let conn = state.db.lock().unwrap();
-            find_workspace_by_path(&conn, &cwd).ok()
-        };
-
-        sessions.push(ClaudeSession {
-            pid,
-            workspace_path: cwd,
-            workspace_id,
-            tty,
-        });
+    if all_panes.is_empty() {
+        return Ok(vec![]);
     }
 
-    Ok(sessions)
+    // Group panes by (session_name, window_name)
+    let mut grouped: std::collections::HashMap<(String, String), Vec<TmuxPane>> =
+        std::collections::HashMap::new();
+    for (session_name, window_name, pane) in all_panes {
+        grouped
+            .entry((session_name, window_name))
+            .or_default()
+            .push(pane);
+    }
+
+    // Match against workspaces in DB
+    let (workspaces, repos) = {
+        let conn = state.db.lock().unwrap();
+        let ws = db::workspaces::list(&conn, None).map_err(|e| e.to_string())?;
+        let rp = db::repos::list(&conn).map_err(|e| e.to_string())?;
+        (ws, rp)
+    };
+
+    let mut results = Vec::new();
+    for ((session_name, window_name), panes) in grouped {
+        // Find matching workspace: session_name = repo.name, window_name = workspace.directory_name
+        let workspace = workspaces.iter().find(|ws| {
+            ws.directory_name == window_name
+                && repos
+                    .iter()
+                    .any(|r| r.id == ws.repository_id && r.name == session_name)
+        });
+
+        if let Some(ws) = workspace {
+            results.push(WorkspacePaneInfo {
+                workspace_id: ws.id.clone(),
+                repo_name: session_name,
+                workspace_name: window_name,
+                panes,
+            });
+        }
+    }
+
+    Ok(results)
 }
 
+/// Open a Claude session in a workspace.
+/// - If Claude is already running → attach to the existing window
+/// - If no Claude running → create a new pane with claude, then attach
 #[tauri::command]
 #[specta::specta]
 pub async fn open_claude_session(
@@ -256,56 +271,36 @@ pub async fn open_claude_session(
         resolve_workspace_path(&conn, &workspace_id)?
     };
 
-    // Check for existing claude process at this path
-    let check_path = ws_path_str.clone();
-    let found = tokio::task::spawn_blocking(move || {
-        let detector = RealProcessDetector;
-        let pids = detector.find_claude_pids().unwrap_or_default();
+    let repo_name = repo.name.clone();
+    let ws_name = workspace.directory_name.clone();
+    let ws_path = ws_path_str.clone();
 
-        for pid in pids {
-            if let Ok(cwd) = detector.get_pid_cwd(pid) {
-                if cwd == check_path {
-                    let tty = detector.get_pid_tty(pid).ok().flatten();
-                    return Some((pid, tty));
-                }
-            }
-        }
-        None
+    // Check if Claude is already running in this workspace
+    let ws_name_check = ws_name.clone();
+    let repo_name_check = repo_name.clone();
+    let has_claude = tokio::task::spawn_blocking(move || {
+        tmux::has_claude_running(&repo_name_check, &ws_name_check)
     })
     .await
+    .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
 
-    if let Some((_pid, tty)) = found {
-        if let Some(tty) = tty {
-            let tty_clone = tty.clone();
-            let focused = tokio::task::spawn_blocking(move || {
-                terminal::focus_tmux_pane(&tty_clone).unwrap_or(false)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+    if has_claude {
+        // Claude is running — just attach iTerm to the session
+        let repo_name_attach = repo_name.clone();
+        let ws_name_attach = ws_name.clone();
+        tokio::task::spawn_blocking(move || {
+            terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
 
-            if focused {
-                terminal::activate_terminal_app();
-                return Ok("focused".to_string());
-            }
-
-            let focused = tokio::task::spawn_blocking(move || {
-                terminal::focus_iterm_session(&tty).unwrap_or(false)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-
-            if focused {
-                return Ok("focused".to_string());
-            }
-        }
-        // Process exists but couldn't focus its terminal — still activate
-        terminal::activate_terminal_app();
-        return Ok("running".to_string());
+        return Ok("attached".to_string());
     }
 
-    // Check if a previous session exists for --continue
-    let resume_path = ws_path_str.clone();
+    // No Claude running — determine command
+    let resume_path = ws_path.clone();
     let has_previous = tokio::task::spawn_blocking(move || has_existing_session(&resume_path))
         .await
         .map_err(|e| e.to_string())?;
@@ -316,17 +311,98 @@ pub async fn open_claude_session(
         "claude".to_string()
     };
 
-    let session_name = format!("{}-{}", repo.name, workspace.directory_name);
-    let open_path = ws_path_str.clone();
+    // Create pane with Claude
+    let repo_name_create = repo_name.clone();
+    let ws_name_create = ws_name.clone();
+    let ws_path_create = ws_path.clone();
+    tokio::task::spawn_blocking(move || {
+        tmux::create_pane(&repo_name_create, &ws_name_create, &ws_path_create, &claude_cmd)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
 
-    tokio::task::spawn_blocking(move || open_in_terminal(&open_path, &session_name, &claude_cmd))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+    // Attach iTerm
+    let repo_name_attach = repo_name.clone();
+    let ws_name_attach = ws_name.clone();
+    tokio::task::spawn_blocking(move || {
+        terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
 
     Ok("created".to_string())
 }
 
+/// Resume a specific Claude session by session_id.
+/// Reuses an idle pane if available, otherwise creates a new one.
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_claude_session(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    session_id: String,
+) -> Result<String, String> {
+    let (workspace, repo, ws_path_str) = {
+        let conn = state.db.lock().unwrap();
+        resolve_workspace_path(&conn, &workspace_id)?
+    };
+
+    let repo_name = repo.name.clone();
+    let ws_name = workspace.directory_name.clone();
+    let ws_path = ws_path_str.clone();
+    let claude_cmd = format!("claude --resume {}", session_id);
+
+    // Try to find an idle pane
+    let repo_name_idle = repo_name.clone();
+    let ws_name_idle = ws_name.clone();
+    let idle_pane = tokio::task::spawn_blocking(move || {
+        tmux::find_idle_pane(&repo_name_idle, &ws_name_idle)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    if let Some(pane_index) = idle_pane {
+        // Reuse idle pane
+        let repo_name_send = repo_name.clone();
+        let ws_name_send = ws_name.clone();
+        let cmd = claude_cmd.clone();
+        tokio::task::spawn_blocking(move || {
+            tmux::send_to_pane(&repo_name_send, &ws_name_send, pane_index, &cmd)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    } else {
+        // No idle pane — create a new one
+        let repo_name_create = repo_name.clone();
+        let ws_name_create = ws_name.clone();
+        let ws_path_create = ws_path.clone();
+        let cmd = claude_cmd.clone();
+        tokio::task::spawn_blocking(move || {
+            tmux::create_pane(&repo_name_create, &ws_name_create, &ws_path_create, &cmd)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Attach iTerm
+    let repo_name_attach = repo_name.clone();
+    let ws_name_attach = ws_name.clone();
+    tokio::task::spawn_blocking(move || {
+        terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok("resumed".to_string())
+}
+
+/// Get session history for a workspace (from ~/.claude/projects/).
 #[tauri::command]
 #[specta::specta]
 pub async fn get_workspace_sessions(
@@ -344,122 +420,107 @@ pub async fn get_workspace_sessions(
         .map_err(|e| e.to_string())?
 }
 
+/// List panes for a specific workspace.
 #[tauri::command]
 #[specta::specta]
-pub async fn resume_claude_session(
+pub async fn list_workspace_panes(
     state: State<'_, AppState>,
     workspace_id: String,
-    session_id: String,
+) -> Result<Vec<TmuxPane>, String> {
+    let (workspace, repo, _) = {
+        let conn = state.db.lock().unwrap();
+        resolve_workspace_path(&conn, &workspace_id)?
+    };
+
+    let repo_name = repo.name;
+    let ws_name = workspace.directory_name;
+
+    tokio::task::spawn_blocking(move || tmux::list_panes(&repo_name, &ws_name))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Open a shell pane in the workspace window.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_shell_pane(
+    state: State<'_, AppState>,
+    workspace_id: String,
 ) -> Result<String, String> {
     let (workspace, repo, ws_path_str) = {
         let conn = state.db.lock().unwrap();
         resolve_workspace_path(&conn, &workspace_id)?
     };
 
-    // Check for existing claude process at this workspace path first.
-    // If one is running, focus it instead of opening a new terminal —
-    // `claude --resume` on an already-running session creates a new empty session.
-    let check_path = ws_path_str.clone();
-    let found = tokio::task::spawn_blocking(move || {
-        let detector = RealProcessDetector;
-        let pids = detector.find_claude_pids().unwrap_or_default();
+    let repo_name = repo.name.clone();
+    let ws_name = workspace.directory_name.clone();
+    let ws_path = ws_path_str.clone();
 
-        for pid in pids {
-            if let Ok(cwd) = detector.get_pid_cwd(pid) {
-                if cwd == check_path {
-                    let tty = detector.get_pid_tty(pid).ok().flatten();
-                    return Some((pid, tty));
-                }
-            }
+    // Ensure workspace window exists, then split a new shell pane
+    let repo_name_create = repo_name.clone();
+    let ws_name_create = ws_name.clone();
+    let ws_path_create = ws_path.clone();
+    tokio::task::spawn_blocking(move || {
+        tmux::ensure_workspace_window(&repo_name_create, &ws_name_create, &ws_path_create)?;
+        // Split with default shell (no command = shell)
+        let target = format!("{}:{}", repo_name_create, ws_name_create);
+        let output = std::process::Command::new("tmux")
+            .args(["-L", "bunyan", "split-window", "-h", "-t", &target, "-c", &ws_path_create])
+            .output()
+            .map_err(|e| crate::error::BunyanError::Process(format!("Failed to split window: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(crate::error::BunyanError::Process(format!(
+                "tmux split-window failed: {}",
+                stderr
+            )));
         }
-        None
+        Ok(())
     })
     .await
+    .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
 
-    if let Some((_pid, tty)) = found {
-        if let Some(tty) = tty {
-            let tty_clone = tty.clone();
-            let focused = tokio::task::spawn_blocking(move || {
-                terminal::focus_tmux_pane(&tty_clone).unwrap_or(false)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+    // Attach iTerm
+    let repo_name_attach = repo_name.clone();
+    let ws_name_attach = ws_name.clone();
+    tokio::task::spawn_blocking(move || {
+        terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
 
-            if focused {
-                terminal::activate_terminal_app();
-                return Ok("focused".to_string());
-            }
+    Ok("created".to_string())
+}
 
-            let focused = tokio::task::spawn_blocking(move || {
-                terminal::focus_iterm_session(&tty).unwrap_or(false)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+/// Kill a specific pane in a workspace window.
+#[tauri::command]
+#[specta::specta]
+pub async fn kill_pane(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_index: u32,
+) -> Result<String, String> {
+    let (workspace, repo, _) = {
+        let conn = state.db.lock().unwrap();
+        resolve_workspace_path(&conn, &workspace_id)?
+    };
 
-            if focused {
-                return Ok("focused".to_string());
-            }
-        }
-        terminal::activate_terminal_app();
-        return Ok("running".to_string());
-    }
+    let repo_name = repo.name;
+    let ws_name = workspace.directory_name;
 
-    let session_name = format!("{}-{}", repo.name, workspace.directory_name);
-    let claude_cmd = format!("claude --resume {}", session_id);
-
-    tokio::task::spawn_blocking(move || open_in_terminal(&ws_path_str, &session_name, &claude_cmd))
+    tokio::task::spawn_blocking(move || tmux::kill_pane(&repo_name, &ws_name, pane_index))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    Ok("resumed".to_string())
+    Ok("killed".to_string())
 }
 
-fn find_workspace_by_path(
-    conn: &rusqlite::Connection,
-    path: &str,
-) -> crate::error::Result<String> {
-    let workspaces = db::workspaces::list(conn, None)?;
-    let repos = db::repos::list(conn)?;
-
-    for ws in &workspaces {
-        if let Some(repo) = repos.iter().find(|r| r.id == ws.repository_id) {
-            let base = Path::new(&repo.root_path)
-                .parent()
-                .and_then(|p| p.parent());
-            if let Some(base) = base {
-                let ws_path = base
-                    .join("workspaces")
-                    .join(&repo.name)
-                    .join(&ws.directory_name);
-                if let Some(ws_path_str) = ws_path.to_str() {
-                    if ws_path_str == path {
-                        return Ok(ws.id.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    Err(crate::error::BunyanError::NotFound(format!(
-        "No workspace found for path: {}",
-        path
-    )))
-}
-
-fn has_existing_session(workspace_path: &str) -> bool {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return false,
-    };
-
-    let sanitized = workspace_path.replace('/', "-");
-    let sessions_path = home
-        .join(".claude")
-        .join("projects")
-        .join(&sanitized)
-        .join("sessions-index.json");
-
-    sessions_path.exists()
+/// Kill the entire tmux window for a workspace (used before archiving).
+pub fn kill_workspace_window(repo_name: &str, workspace_name: &str) {
+    let _ = tmux::kill_window(repo_name, workspace_name);
 }

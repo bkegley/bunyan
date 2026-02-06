@@ -9,6 +9,7 @@
 - Figure out cleanup/deletion strategy for old archived worktrees
 - Auto-run setup script from conductor_config on worktree creation (backend doesn't do this yet)
 
-## Claude Sessions
-- Figure out how to display non-bunyan claude sessions (workspace_id: None) — currently we track count but don't show them
-- Per-session active terminal detection: we detect active claude PIDs per workspace but can't correlate a running PID to a specific session_id from sessions-index.json. Claude Code doesn't expose which session a running process uses. Options: (1) check file mtime on session .jsonl files to infer active session, (2) parse lsof for open .jsonl file handles, (3) wait for Claude CLI to expose session metadata
+## Tmux Session Management
+- Handle tmux session name collisions if two repos have the same name
+- Consider adding a "detach all" or "kill server" button for cleanup
+- Surface tmux connection errors in the UI rather than failing silently

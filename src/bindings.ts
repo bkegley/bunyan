@@ -41,17 +41,51 @@ async setSetting(key: string, value: string) : Promise<Setting> {
 async getAllSettings() : Promise<Setting[]> {
     return await TAURI_INVOKE("get_all_settings");
 },
-async getActiveClaudeSessions() : Promise<ClaudeSession[]> {
+/**
+ * Get pane info for all workspaces that have active tmux windows.
+ * Used by the frontend for polling active sessions.
+ */
+async getActiveClaudeSessions() : Promise<WorkspacePaneInfo[]> {
     return await TAURI_INVOKE("get_active_claude_sessions");
 },
+/**
+ * Open a Claude session in a workspace.
+ * - If Claude is already running → attach to the existing window
+ * - If no Claude running → create a new pane with claude, then attach
+ */
 async openClaudeSession(workspaceId: string) : Promise<string> {
     return await TAURI_INVOKE("open_claude_session", { workspaceId });
 },
+/**
+ * Get session history for a workspace (from ~/.claude/projects/).
+ */
 async getWorkspaceSessions(workspaceId: string) : Promise<ClaudeSessionEntry[]> {
     return await TAURI_INVOKE("get_workspace_sessions", { workspaceId });
 },
+/**
+ * Resume a specific Claude session by session_id.
+ * Reuses an idle pane if available, otherwise creates a new one.
+ */
 async resumeClaudeSession(workspaceId: string, sessionId: string) : Promise<string> {
     return await TAURI_INVOKE("resume_claude_session", { workspaceId, sessionId });
+},
+/**
+ * List panes for a specific workspace.
+ */
+async listWorkspacePanes(workspaceId: string) : Promise<TmuxPane[]> {
+    return await TAURI_INVOKE("list_workspace_panes", { workspaceId });
+},
+/**
+ * Open a shell pane in the workspace window.
+ */
+async openShellPane(workspaceId: string) : Promise<string> {
+    return await TAURI_INVOKE("open_shell_pane", { workspaceId });
+},
+/**
+ * Kill a specific pane in a workspace window.
+ */
+async killPane(workspaceId: string, paneIndex: number) : Promise<string> {
+    return await TAURI_INVOKE("kill_pane", { workspaceId, paneIndex });
 }
 }
 
@@ -65,7 +99,6 @@ async resumeClaudeSession(workspaceId: string, sessionId: string) : Promise<stri
 
 /** user-defined types **/
 
-export type ClaudeSession = { pid: number; workspace_path: string; workspace_id: string | null; tty: string | null }
 /**
  * A single session entry from ~/.claude/projects/<path>/sessions-index.json
  */
@@ -75,8 +108,32 @@ export type CreateWorkspaceInput = { repository_id: string; directory_name: stri
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Repo = { id: string; name: string; remote_url: string; default_branch: string; root_path: string; remote: string; display_order: number; conductor_config: JsonValue | null; created_at: string; updated_at: string }
 export type Setting = { key: string; value: string; created_at: string; updated_at: string }
+/**
+ * A tmux pane within the Bunyan-managed tmux server.
+ */
+export type TmuxPane = { 
+/**
+ * Pane index within its window
+ */
+pane_index: number; 
+/**
+ * Current command running in the pane (e.g. "claude", "zsh")
+ */
+command: string; 
+/**
+ * Whether this is the currently selected pane in the window
+ */
+is_active: boolean; 
+/**
+ * Current working directory of the pane
+ */
+workspace_path: string }
 export type UpdateRepoInput = { id: string; name: string | null; default_branch: string | null; display_order: number | null; conductor_config: JsonValue | null }
 export type Workspace = { id: string; repository_id: string; directory_name: string; branch: string; state: WorkspaceState; created_at: string; updated_at: string }
+/**
+ * Info about all panes in a workspace's tmux window.
+ */
+export type WorkspacePaneInfo = { workspace_id: string; repo_name: string; workspace_name: string; panes: TmuxPane[] }
 export type WorkspaceState = "ready" | "archived"
 
 /** tauri-specta globals **/

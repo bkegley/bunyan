@@ -12,6 +12,8 @@ import {
   type Workspace,
   type JsonValue,
   type ClaudeSessionEntry,
+  type WorkspacePaneInfo,
+  type TmuxPane,
 } from "./bindings";
 import "./App.css";
 
@@ -38,8 +40,7 @@ function asConfig(val: JsonValue | null): ConductorConfig | null {
 interface AppContextType {
   repos: Repo[];
   workspaces: Workspace[];
-  activeSessions: Set<string>;
-  otherSessionCount: number;
+  workspacePanes: Map<string, WorkspacePaneInfo>;
   showArchived: boolean;
   expandedRepos: Set<string>;
   openSettingsRepo: string | null;
@@ -70,6 +71,8 @@ interface AppContextType {
   ) => Promise<void>;
   archiveWorkspaceById: (id: string) => Promise<void>;
   openClaude: (workspaceId: string) => Promise<void>;
+  openShell: (workspaceId: string) => Promise<void>;
+  killPane: (workspaceId: string, paneIndex: number) => Promise<void>;
   expandedWorkspaceSessions: Set<string>;
   workspaceSessions: Map<string, ClaudeSessionEntry[]>;
   toggleWorkspaceSessions: (workspaceId: string) => void;
@@ -85,6 +88,15 @@ const AppContext = createContext<AppContextType>(null!);
 function deriveRepoName(url: string): string {
   const match = url.match(/[/:]([^/:]+?)(?:\.git)?\s*$/);
   return match ? match[1] : "";
+}
+
+function countClaudePanes(panes: TmuxPane[]): number {
+  return panes.filter((p) => p.command === "claude").length;
+}
+
+function countShellPanes(panes: TmuxPane[]): number {
+  const shells = ["zsh", "bash", "fish", "sh"];
+  return panes.filter((p) => shells.includes(p.command)).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,12 +137,6 @@ function MainView() {
           ctx.repos.map((repo) => <RepoSection key={repo.id} repo={repo} />)
         )}
       </div>
-
-      {ctx.otherSessionCount > 0 && (
-        <div className="footer">
-          Other claude sessions: {ctx.otherSessionCount}
-        </div>
-      )}
     </div>
   );
 }
@@ -297,21 +303,30 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
 
 function WorkspaceRow({ workspace }: { workspace: Workspace }) {
   const ctx = useContext(AppContext);
-  const isActive = ctx.activeSessions.has(workspace.id);
+  const paneInfo = ctx.workspacePanes.get(workspace.id);
+  const panes = paneInfo?.panes ?? [];
+  const claudeCount = countClaudePanes(panes);
+  const shellCount = countShellPanes(panes);
+  const hasAnyPanes = panes.length > 0;
   const isArchived = workspace.state === "archived";
   const isArchiving = ctx.archivingWorkspace.has(workspace.id);
   const isOpening = ctx.openingSession.has(workspace.id);
   const isSessionsExpanded = ctx.expandedWorkspaceSessions.has(workspace.id);
   const sessions = ctx.workspaceSessions.get(workspace.id) ?? [];
+  const [panesExpanded, setPanesExpanded] = useState(false);
 
   const handleClaude = async () => {
     await ctx.openClaude(workspace.id);
   };
 
+  const handleShell = async () => {
+    await ctx.openShell(workspace.id);
+  };
+
   const handleArchive = async () => {
     if (
       !window.confirm(
-        `Archive ${workspace.directory_name}? This will remove the worktree from disk.`,
+        `Archive ${workspace.directory_name}? This will remove the worktree and kill any running sessions.`,
       )
     ) {
       return;
@@ -328,11 +343,23 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
           <span className="archived-badge">archived</span>
         ) : (
           <div className="workspace-actions">
+            {hasAnyPanes && (
+              <button
+                className="panes-toggle-btn"
+                onClick={() => setPanesExpanded(!panesExpanded)}
+              >
+                {panesExpanded ? "\u25be" : "\u25b8"}{" "}
+                {claudeCount > 0 && `${claudeCount} claude`}
+                {claudeCount > 0 && shellCount > 0 && ", "}
+                {shellCount > 0 && `${shellCount} shell`}
+                {claudeCount === 0 && shellCount === 0 && `${panes.length} pane${panes.length !== 1 ? "s" : ""}`}
+              </button>
+            )}
             <button
               className="sessions-toggle-btn"
               onClick={() => ctx.toggleWorkspaceSessions(workspace.id)}
             >
-              {isSessionsExpanded ? "\u25be" : "\u25b8"} Sessions
+              {isSessionsExpanded ? "\u25be" : "\u25b8"} History
             </button>
             <button
               className="claude-btn"
@@ -343,10 +370,17 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
                 <span className="spinner spinner-sm" />
               ) : (
                 <span
-                  className={`claude-dot ${isActive ? "active" : "inactive"}`}
+                  className={`claude-dot ${claudeCount > 0 ? "active" : "inactive"}`}
                 />
               )}
               Claude
+            </button>
+            <button
+              className="shell-btn"
+              onClick={handleShell}
+              disabled={isOpening}
+            >
+              Shell
             </button>
             <button
               className="archive-btn"
@@ -358,6 +392,18 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
           </div>
         )}
       </div>
+
+      {panesExpanded && hasAnyPanes && !isArchived && (
+        <div className="pane-list">
+          {panes.map((pane) => (
+            <PaneRow
+              key={pane.pane_index}
+              pane={pane}
+              workspaceId={workspace.id}
+            />
+          ))}
+        </div>
+      )}
 
       {isSessionsExpanded && !isArchived && (
         <div className="session-list">
@@ -374,6 +420,37 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function PaneRow({
+  pane,
+  workspaceId,
+}: {
+  pane: TmuxPane;
+  workspaceId: string;
+}) {
+  const ctx = useContext(AppContext);
+  const isClaude = pane.command === "claude";
+  const shells = ["zsh", "bash", "fish", "sh"];
+  const isShell = shells.includes(pane.command);
+
+  const handleKill = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await ctx.killPane(workspaceId, pane.pane_index);
+  };
+
+  return (
+    <div className="pane-row">
+      <span className={`pane-type ${isClaude ? "pane-claude" : isShell ? "pane-shell" : ""}`}>
+        {isClaude ? "claude" : isShell ? "shell" : pane.command}
+      </span>
+      {pane.is_active && <span className="pane-active-badge">active</span>}
+      <span className="pane-path">{pane.workspace_path}</span>
+      <button className="pane-kill-btn" onClick={handleKill} title="Kill pane">
+        &times;
+      </button>
     </div>
   );
 }
@@ -553,10 +630,9 @@ function App() {
   // Data
   const [repos, setRepos] = useState<Repo[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [activeSessions, setActiveSessions] = useState<Set<string>>(
-    new Set(),
-  );
-  const [otherSessionCount, setOtherSessionCount] = useState(0);
+  const [workspacePanes, setWorkspacePanes] = useState<
+    Map<string, WorkspacePaneInfo>
+  >(new Map());
   const [homePath, setHomePath] = useState("");
 
   // UI state
@@ -593,20 +669,14 @@ function App() {
 
   const pollSessions = useCallback(async () => {
     try {
-      const sessions = await commands.getActiveClaudeSessions();
-      const activeIds = new Set<string>();
-      let otherCount = 0;
-      for (const s of sessions) {
-        if (s.workspace_id) {
-          activeIds.add(s.workspace_id);
-        } else {
-          otherCount++;
-        }
+      const paneInfos = await commands.getActiveClaudeSessions();
+      const paneMap = new Map<string, WorkspacePaneInfo>();
+      for (const info of paneInfos) {
+        paneMap.set(info.workspace_id, info);
       }
-      setActiveSessions(activeIds);
-      setOtherSessionCount(otherCount);
+      setWorkspacePanes(paneMap);
     } catch {
-      // Fail silently — just show no green dots
+      // Fail silently
     }
   }, []);
 
@@ -747,7 +817,9 @@ function App() {
         return next;
       });
     }
-  }, []);
+    // Refresh panes since the tmux window was killed
+    setTimeout(pollSessions, 500);
+  }, [pollSessions]);
 
   const handleOpenClaude = useCallback(
     async (workspaceId: string) => {
@@ -761,6 +833,34 @@ function App() {
           return next;
         });
         setTimeout(pollSessions, 1000);
+      }
+    },
+    [pollSessions],
+  );
+
+  const handleOpenShell = useCallback(
+    async (workspaceId: string) => {
+      setOpeningSession((prev) => new Set([...prev, workspaceId]));
+      try {
+        await commands.openShellPane(workspaceId);
+      } finally {
+        setOpeningSession((prev) => {
+          const next = new Set(prev);
+          next.delete(workspaceId);
+          return next;
+        });
+        setTimeout(pollSessions, 1000);
+      }
+    },
+    [pollSessions],
+  );
+
+  const handleKillPane = useCallback(
+    async (workspaceId: string, paneIndex: number) => {
+      try {
+        await commands.killPane(workspaceId, paneIndex);
+      } finally {
+        setTimeout(pollSessions, 500);
       }
     },
     [pollSessions],
@@ -817,8 +917,7 @@ function App() {
   const contextValue: AppContextType = {
     repos,
     workspaces,
-    activeSessions,
-    otherSessionCount,
+    workspacePanes,
     showArchived,
     expandedRepos,
     openSettingsRepo,
@@ -841,6 +940,8 @@ function App() {
     createNewWorkspace: handleCreateWorkspace,
     archiveWorkspaceById: handleArchiveWorkspace,
     openClaude: handleOpenClaude,
+    openShell: handleOpenShell,
+    killPane: handleKillPane,
     expandedWorkspaceSessions,
     workspaceSessions,
     toggleWorkspaceSessions,

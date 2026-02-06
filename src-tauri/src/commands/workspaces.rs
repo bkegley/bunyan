@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use tauri::State;
 
+use crate::commands::claude;
 use crate::db;
 use crate::git::{GitOps, RealGit};
 use crate::models::{CreateWorkspaceInput, Workspace};
@@ -77,6 +78,9 @@ pub async fn archive_workspace(
         let rp = db::repos::get(&conn, &ws.repository_id).map_err(|e| e.to_string())?;
         (ws, rp)
     };
+
+    // Kill the tmux window for this workspace (terminates all running sessions)
+    claude::kill_workspace_window(&repo.name, &workspace.directory_name);
 
     let wt_path = workspace_path(&repo.root_path, &repo.name, &workspace.directory_name)?;
     let repo_root = repo.root_path.clone();
