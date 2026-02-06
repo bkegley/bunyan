@@ -22,6 +22,7 @@ fn workspace_path(repo_root: &str, repo_name: &str, dir_name: &str) -> Result<St
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn list_workspaces(
     state: State<AppState>,
     repository_id: Option<String>,
@@ -31,14 +32,16 @@ pub fn list_workspaces(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn get_workspace(state: State<AppState>, id: String) -> Result<Workspace, String> {
     let conn = state.db.lock().unwrap();
     db::workspaces::get(&conn, &id).map_err(|e| e.into())
 }
 
 #[tauri::command]
-pub fn create_workspace(
-    state: State<AppState>,
+#[specta::specta]
+pub async fn create_workspace(
+    state: State<'_, AppState>,
     input: CreateWorkspaceInput,
 ) -> Result<Workspace, String> {
     let repo = {
@@ -47,17 +50,27 @@ pub fn create_workspace(
     };
 
     let wt_path = workspace_path(&repo.root_path, &repo.name, &input.directory_name)?;
+    let repo_root = repo.root_path.clone();
+    let branch = input.branch.clone();
 
-    let git = RealGit;
-    git.worktree_add(&repo.root_path, &wt_path, &input.branch)
-        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let git = RealGit;
+        git.worktree_add(&repo_root, &wt_path, &branch)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
 
     let conn = state.db.lock().unwrap();
     db::workspaces::create(&conn, input).map_err(|e| e.into())
 }
 
 #[tauri::command]
-pub fn archive_workspace(state: State<AppState>, id: String) -> Result<Workspace, String> {
+#[specta::specta]
+pub async fn archive_workspace(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Workspace, String> {
     let (workspace, repo) = {
         let conn = state.db.lock().unwrap();
         let ws = db::workspaces::get(&conn, &id).map_err(|e| e.to_string())?;
@@ -66,10 +79,15 @@ pub fn archive_workspace(state: State<AppState>, id: String) -> Result<Workspace
     };
 
     let wt_path = workspace_path(&repo.root_path, &repo.name, &workspace.directory_name)?;
+    let repo_root = repo.root_path.clone();
 
-    let git = RealGit;
-    git.worktree_remove(&repo.root_path, &wt_path)
-        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let git = RealGit;
+        git.worktree_remove(&repo_root, &wt_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
 
     let conn = state.db.lock().unwrap();
     db::workspaces::archive(&conn, &id).map_err(|e| e.into())

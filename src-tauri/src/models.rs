@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct Repo {
     pub id: String,
     pub name: String,
@@ -14,7 +14,7 @@ pub struct Repo {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, specta::Type)]
 pub struct CreateRepoInput {
     pub name: String,
     pub remote_url: String,
@@ -35,7 +35,7 @@ fn default_remote() -> String {
     "origin".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, specta::Type)]
 pub struct UpdateRepoInput {
     pub id: String,
     pub name: Option<String>,
@@ -44,7 +44,7 @@ pub struct UpdateRepoInput {
     pub conductor_config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceState {
     Ready,
@@ -68,7 +68,7 @@ impl WorkspaceState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct Workspace {
     pub id: String,
     pub repository_id: String,
@@ -79,14 +79,14 @@ pub struct Workspace {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, specta::Type)]
 pub struct CreateWorkspaceInput {
     pub repository_id: String,
     pub directory_name: String,
     pub branch: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct Setting {
     pub key: String,
     pub value: String,
@@ -94,7 +94,7 @@ pub struct Setting {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ClaudeSession {
     pub pid: u32,
     pub workspace_path: String,

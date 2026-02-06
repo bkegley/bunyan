@@ -28,10 +28,8 @@ pub fn run() {
 
     let app_state = state::AppState::new(conn);
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .manage(app_state)
-        .invoke_handler(tauri::generate_handler![
+    let builder = tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(tauri_specta::collect_commands![
             commands::repos::list_repos,
             commands::repos::get_repo,
             commands::repos::create_repo,
@@ -47,6 +45,24 @@ pub fn run() {
             commands::claude::get_active_claude_sessions,
             commands::claude::open_claude_session,
         ])
+        .error_handling(tauri_specta::ErrorHandlingMode::Throw);
+
+    #[cfg(debug_assertions)]
+    builder
+        .export(
+            specta_typescript::Typescript::default(),
+            "../src/bindings.ts",
+        )
+        .expect("Failed to export typescript bindings");
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(app_state)
+        .invoke_handler(builder.invoke_handler())
+        .setup(move |app| {
+            builder.mount_events(app);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

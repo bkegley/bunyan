@@ -8,21 +8,40 @@ use crate::state::AppState;
 use crate::terminal;
 
 #[tauri::command]
-pub fn get_active_claude_sessions(state: State<AppState>) -> Result<Vec<ClaudeSession>, String> {
-    let detector = RealProcessDetector;
-    let pids = detector
-        .find_claude_pids()
+#[specta::specta]
+pub async fn get_active_claude_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<ClaudeSession>, String> {
+    let pids = tokio::task::spawn_blocking(|| {
+        let detector = RealProcessDetector;
+        detector.find_claude_pids()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let pids_clone = pids.clone();
+    let pid_info: Vec<(u32, Option<String>, Option<String>)> =
+        tokio::task::spawn_blocking(move || {
+            let detector = RealProcessDetector;
+            pids_clone
+                .into_iter()
+                .filter_map(|pid| {
+                    let cwd = detector.get_pid_cwd(pid).ok()?;
+                    let tty = detector.get_pid_tty(pid).ok().flatten();
+                    Some((pid, Some(cwd), tty))
+                })
+                .collect()
+        })
+        .await
         .map_err(|e| e.to_string())?;
 
     let mut sessions = Vec::new();
-
-    for pid in pids {
-        let cwd = match detector.get_pid_cwd(pid) {
-            Ok(path) => path,
-            Err(_) => continue,
+    for (pid, cwd, tty) in pid_info {
+        let cwd = match cwd {
+            Some(c) => c,
+            None => continue,
         };
-
-        let tty = detector.get_pid_tty(pid).ok().flatten();
 
         let workspace_id = {
             let conn = state.db.lock().unwrap();
@@ -41,7 +60,11 @@ pub fn get_active_claude_sessions(state: State<AppState>) -> Result<Vec<ClaudeSe
 }
 
 #[tauri::command]
-pub fn open_claude_session(state: State<AppState>, workspace_id: String) -> Result<String, String> {
+#[specta::specta]
+pub async fn open_claude_session(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<String, String> {
     let (workspace, repo) = {
         let conn = state.db.lock().unwrap();
         let ws = db::workspaces::get(&conn, &workspace_id).map_err(|e| e.to_string())?;
@@ -58,49 +81,81 @@ pub fn open_claude_session(state: State<AppState>, workspace_id: String) -> Resu
         .join("workspaces")
         .join(&repo.name)
         .join(&workspace.directory_name);
-    let ws_path_str = ws_path.to_str().ok_or("Invalid workspace path")?;
+    let ws_path_str = ws_path
+        .to_str()
+        .ok_or("Invalid workspace path")?
+        .to_string();
 
     // Check for existing claude process at this path
-    let detector = RealProcessDetector;
-    let pids = detector.find_claude_pids().map_err(|e| e.to_string())?;
+    let check_path = ws_path_str.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        let detector = RealProcessDetector;
+        let pids = detector.find_claude_pids().unwrap_or_default();
 
-    for pid in pids {
-        if let Ok(cwd) = detector.get_pid_cwd(pid) {
-            if cwd == ws_path_str {
-                // Already running — try to focus it
-                if let Ok(Some(tty)) = detector.get_pid_tty(pid) {
-                    if terminal::focus_tmux_pane(&tty).unwrap_or(false) {
-                        return Ok("focused".to_string());
-                    }
-                    if terminal::focus_iterm_session(&tty).unwrap_or(false) {
-                        return Ok("focused".to_string());
-                    }
+        for pid in pids {
+            if let Ok(cwd) = detector.get_pid_cwd(pid) {
+                if cwd == check_path {
+                    let tty = detector.get_pid_tty(pid).ok().flatten();
+                    return Some((pid, tty));
                 }
-                return Ok("running".to_string());
             }
         }
+        None
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((_pid, tty)) = found {
+        if let Some(tty) = tty {
+            let tty_clone = tty.clone();
+            let focused = tokio::task::spawn_blocking(move || {
+                terminal::focus_tmux_pane(&tty_clone).unwrap_or(false)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            if focused {
+                return Ok("focused".to_string());
+            }
+
+            let focused = tokio::task::spawn_blocking(move || {
+                terminal::focus_iterm_session(&tty).unwrap_or(false)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            if focused {
+                return Ok("focused".to_string());
+            }
+        }
+        return Ok("running".to_string());
     }
 
     // Check if a previous session exists for --continue
-    let resume = has_existing_session(ws_path_str);
+    let resume_path = ws_path_str.clone();
+    let resume = tokio::task::spawn_blocking(move || has_existing_session(&resume_path))
+        .await
+        .map_err(|e| e.to_string())?;
 
-    // Try to detect preferred terminal and open session
-    // Prefer tmux if it's running, otherwise iTerm
-    let tmux_check = std::process::Command::new("tmux")
-        .args(["list-sessions"])
-        .output();
-
+    // Detect preferred terminal and open session
     let session_name = format!("{}-{}", repo.name, workspace.directory_name);
+    let open_path = ws_path_str.clone();
 
-    match tmux_check {
-        Ok(output) if output.status.success() => {
-            terminal::open_tmux_session(ws_path_str, &session_name, resume)
-                .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let tmux_check = std::process::Command::new("tmux")
+            .args(["list-sessions"])
+            .output();
+
+        match tmux_check {
+            Ok(output) if output.status.success() => {
+                terminal::open_tmux_session(&open_path, &session_name, resume)
+            }
+            _ => terminal::open_iterm_session(&open_path, resume),
         }
-        _ => {
-            terminal::open_iterm_session(ws_path_str, resume).map_err(|e| e.to_string())?;
-        }
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
 
     Ok("created".to_string())
 }

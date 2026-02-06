@@ -5,12 +5,14 @@ use crate::models::Setting;
 use crate::state::AppState;
 
 #[tauri::command]
+#[specta::specta]
 pub fn get_setting(state: State<AppState>, key: String) -> Result<Setting, String> {
     let conn = state.db.lock().unwrap();
     db::settings::get(&conn, &key).map_err(|e| e.into())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn set_setting(
     state: State<AppState>,
     key: String,
@@ -21,6 +23,7 @@ pub fn set_setting(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn get_all_settings(state: State<AppState>) -> Result<Vec<Setting>, String> {
     let conn = state.db.lock().unwrap();
     db::settings::get_all(&conn).map_err(|e| e.into())
