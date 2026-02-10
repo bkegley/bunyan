@@ -45,6 +45,14 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_workspaces_state ON workspaces(state)",
     )?;
 
+    // Migrations: add container columns to workspaces
+    let _ = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN container_mode TEXT NOT NULL DEFAULT 'local'",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN container_id TEXT",
+    );
+
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,

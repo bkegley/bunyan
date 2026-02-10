@@ -2,10 +2,30 @@ use std::path::{Path, PathBuf};
 use tauri::State;
 
 use crate::db;
-use crate::models::{ClaudeSessionEntry, TmuxPane, WorkspacePaneInfo};
+use crate::docker;
+use crate::models::{ClaudeSessionEntry, ContainerConfig, ContainerMode, TmuxPane, WorkspacePaneInfo};
 use crate::state::AppState;
 use crate::terminal;
 use crate::tmux;
+
+/// Check if dangerously_skip_permissions is enabled in the repo's container config.
+fn should_skip_permissions(repo: &crate::models::Repo) -> bool {
+    repo.config
+        .as_ref()
+        .and_then(|v| v.get("container"))
+        .and_then(|v| serde_json::from_value::<ContainerConfig>(v.clone()).ok())
+        .map(|c| c.dangerously_skip_permissions)
+        .unwrap_or(false)
+}
+
+/// Build a claude command string, optionally adding --dangerously-skip-permissions.
+fn build_claude_cmd(base: &str, skip_permissions: bool) -> String {
+    if skip_permissions {
+        format!("{} --dangerously-skip-permissions", base)
+    } else {
+        base.to_string()
+    }
+}
 
 /// Resolve the filesystem path for a workspace from DB records.
 /// Returns (workspace, repo, workspace_path_string).
@@ -305,10 +325,22 @@ pub async fn open_claude_session(
         .await
         .map_err(|e| e.to_string())?;
 
-    let claude_cmd = if has_previous {
-        "claude --continue".to_string()
+    let skip_perms = workspace.container_mode == ContainerMode::Container
+        && should_skip_permissions(&repo);
+
+    let base_cmd = if has_previous {
+        build_claude_cmd("claude --continue", skip_perms)
     } else {
-        "claude".to_string()
+        build_claude_cmd("claude", skip_perms)
+    };
+
+    let claude_cmd = if workspace.container_mode == ContainerMode::Container {
+        match &workspace.container_id {
+            Some(cid) => docker::docker_exec_cmd(cid, &base_cmd),
+            None => base_cmd,
+        }
+    } else {
+        base_cmd
     };
 
     // Create pane with Claude
@@ -379,7 +411,17 @@ pub async fn resume_claude_session(
     }
 
     // Session not running — resume it
-    let claude_cmd = format!("claude --resume {}", session_id);
+    let skip_perms = workspace.container_mode == ContainerMode::Container
+        && should_skip_permissions(&repo);
+    let base_cmd = build_claude_cmd(&format!("claude --resume {}", session_id), skip_perms);
+    let claude_cmd = if workspace.container_mode == ContainerMode::Container {
+        match &workspace.container_id {
+            Some(cid) => docker::docker_exec_cmd(cid, &base_cmd),
+            None => base_cmd,
+        }
+    } else {
+        base_cmd
+    };
 
     // Try to find an idle pane
     let repo_name_idle = repo_name.clone();
@@ -484,16 +526,31 @@ pub async fn open_shell_pane(
     let ws_name = workspace.directory_name.clone();
     let ws_path = ws_path_str.clone();
 
+    // Determine shell command based on container mode
+    let shell_cmd = if workspace.container_mode == ContainerMode::Container {
+        workspace
+            .container_id
+            .as_ref()
+            .map(|cid| docker::docker_exec_cmd(cid, "/bin/bash"))
+    } else {
+        None
+    };
+
     // Ensure workspace window exists, then split a new shell pane
     let repo_name_create = repo_name.clone();
     let ws_name_create = ws_name.clone();
     let ws_path_create = ws_path.clone();
     tokio::task::spawn_blocking(move || {
         tmux::ensure_workspace_window(&repo_name_create, &ws_name_create, &ws_path_create)?;
-        // Split with default shell (no command = shell)
         let target = format!("{}:{}", repo_name_create, ws_name_create);
+        let mut args = vec!["-L", "bunyan", "split-window", "-h", "-t", &target, "-c", &ws_path_create];
+        let cmd_ref;
+        if let Some(ref cmd) = shell_cmd {
+            cmd_ref = cmd.as_str();
+            args.push(cmd_ref);
+        }
         let output = std::process::Command::new("tmux")
-            .args(["-L", "bunyan", "split-window", "-h", "-t", &target, "-c", &ws_path_create])
+            .args(&args)
             .output()
             .map_err(|e| crate::error::BunyanError::Process(format!("Failed to split window: {}", e)))?;
 

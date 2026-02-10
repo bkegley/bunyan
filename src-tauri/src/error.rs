@@ -7,6 +7,7 @@ pub enum BunyanError {
     Git(String),
     Process(String),
     NotFound(String),
+    Docker(String),
 }
 
 impl fmt::Display for BunyanError {
@@ -17,6 +18,7 @@ impl fmt::Display for BunyanError {
             BunyanError::Git(msg) => write!(f, "Git error: {}", msg),
             BunyanError::Process(msg) => write!(f, "Process error: {}", msg),
             BunyanError::NotFound(msg) => write!(f, "Not found: {}", msg),
+            BunyanError::Docker(msg) => write!(f, "Docker error: {}", msg),
         }
     }
 }
@@ -32,6 +34,12 @@ impl From<rusqlite::Error> for BunyanError {
 impl From<serde_json::Error> for BunyanError {
     fn from(err: serde_json::Error) -> Self {
         BunyanError::Serialization(err)
+    }
+}
+
+impl From<bollard::errors::Error> for BunyanError {
+    fn from(err: bollard::errors::Error) -> Self {
+        BunyanError::Docker(err.to_string())
     }
 }
 

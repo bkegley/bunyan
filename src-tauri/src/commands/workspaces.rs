@@ -3,8 +3,9 @@ use tauri::State;
 
 use crate::commands::claude;
 use crate::db;
+use crate::docker;
 use crate::git::{GitOps, RealGit};
-use crate::models::{CreateWorkspaceInput, Workspace};
+use crate::models::{ContainerConfig, ContainerMode, CreateWorkspaceInput, Workspace};
 use crate::state::AppState;
 
 fn workspace_path(repo_root: &str, repo_name: &str, dir_name: &str) -> Result<String, String> {
@@ -53,6 +54,7 @@ pub async fn create_workspace(
     let wt_path = workspace_path(&repo.root_path, &repo.name, &input.directory_name)?;
     let repo_root = repo.root_path.clone();
     let branch = input.branch.clone();
+    let container_mode = input.container_mode.clone();
 
     tokio::task::spawn_blocking(move || {
         let git = RealGit;
@@ -62,8 +64,55 @@ pub async fn create_workspace(
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
 
-    let conn = state.db.lock().unwrap();
-    db::workspaces::create(&conn, input).map_err(|e| e.into())
+    let workspace = {
+        let conn = state.db.lock().unwrap();
+        db::workspaces::create(&conn, input).map_err(|e| e.to_string())?
+    };
+
+    // If container mode, create and start a Docker container
+    if container_mode == ContainerMode::Container {
+        let container_config = repo
+            .config
+            .as_ref()
+            .and_then(|v| v.get("container"))
+            .and_then(|v| serde_json::from_value::<ContainerConfig>(v.clone()).ok());
+
+        let image = container_config
+            .as_ref()
+            .and_then(|c| c.image.clone())
+            .unwrap_or_else(|| "node:22".to_string());
+        let ports = container_config
+            .as_ref()
+            .and_then(|c| c.ports.clone())
+            .unwrap_or_default();
+        let env: Vec<String> = container_config
+            .as_ref()
+            .and_then(|c| c.env.clone())
+            .map(|m| m.into_iter().map(|(k, v)| format!("{}={}", k, v)).collect())
+            .unwrap_or_default();
+
+        let wt_path = workspace_path(&repo.root_path, &repo.name, &workspace.directory_name)?;
+        let container_name = format!("bunyan-{}-{}", repo.name, workspace.directory_name);
+
+        let container_id =
+            docker::create_workspace_container(&image, &wt_path, &container_name, &ports, &env)
+                .await
+                .map_err(|e| e.to_string())?;
+
+        // Best-effort: install claude in the container
+        if let Err(e) = docker::ensure_claude(&container_id).await {
+            eprintln!("Warning: could not install Claude in container: {}", e);
+        }
+
+        let conn = state.db.lock().unwrap();
+        db::workspaces::set_container_id(&conn, &workspace.id, &container_id)
+            .map_err(|e| e.to_string())?;
+
+        // Re-fetch to get updated container_id
+        return db::workspaces::get(&conn, &workspace.id).map_err(|e| e.to_string());
+    }
+
+    Ok(workspace)
 }
 
 #[tauri::command]
@@ -81,6 +130,15 @@ pub async fn archive_workspace(
 
     // Kill the tmux window for this workspace (terminates all running sessions)
     claude::kill_workspace_window(&repo.name, &workspace.directory_name);
+
+    // If container mode, stop and remove the container
+    if workspace.container_mode == ContainerMode::Container {
+        if let Some(ref container_id) = workspace.container_id {
+            if let Err(e) = docker::remove_container(container_id).await {
+                eprintln!("Warning: failed to remove container {}: {}", container_id, e);
+            }
+        }
+    }
 
     let wt_path = workspace_path(&repo.root_path, &repo.name, &workspace.directory_name)?;
     let repo_root = repo.root_path.clone();

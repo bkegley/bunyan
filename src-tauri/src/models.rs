@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -68,6 +69,45 @@ impl WorkspaceState {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerMode {
+    Local,
+    Container,
+}
+
+impl ContainerMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContainerMode::Local => "local",
+            ContainerMode::Container => "container",
+        }
+    }
+
+    pub fn from_db(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "local" => Ok(ContainerMode::Local),
+            "container" => Ok(ContainerMode::Container),
+            other => Err(format!("Invalid container mode: {}", other)),
+        }
+    }
+}
+
+fn default_container_mode() -> ContainerMode {
+    ContainerMode::Local
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ContainerConfig {
+    pub enabled: bool,
+    pub image: Option<String>,
+    pub ports: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub dangerously_skip_permissions: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct Workspace {
     pub id: String,
@@ -75,6 +115,8 @@ pub struct Workspace {
     pub directory_name: String,
     pub branch: String,
     pub state: WorkspaceState,
+    pub container_mode: ContainerMode,
+    pub container_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -84,6 +126,8 @@ pub struct CreateWorkspaceInput {
     pub repository_id: String,
     pub directory_name: String,
     pub branch: String,
+    #[serde(default = "default_container_mode")]
+    pub container_mode: ContainerMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]

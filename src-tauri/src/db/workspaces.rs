@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::error::{BunyanError, Result};
-use crate::models::{CreateWorkspaceInput, Workspace, WorkspaceState};
+use crate::models::{ContainerMode, CreateWorkspaceInput, Workspace, WorkspaceState};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -10,6 +10,7 @@ fn now() -> String {
 
 fn row_to_workspace(row: &rusqlite::Row) -> rusqlite::Result<Workspace> {
     let state_str: String = row.get(4)?;
+    let container_mode_str: String = row.get(5)?;
     Ok(Workspace {
         id: row.get(0)?,
         repository_id: row.get(1)?,
@@ -17,13 +18,16 @@ fn row_to_workspace(row: &rusqlite::Row) -> rusqlite::Result<Workspace> {
         branch: row.get(3)?,
         state: WorkspaceState::from_db(&state_str)
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        container_mode: ContainerMode::from_db(&container_mode_str)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        container_id: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
 const SELECT_COLS: &str =
-    "id, repository_id, directory_name, branch, state, created_at, updated_at";
+    "id, repository_id, directory_name, branch, state, container_mode, container_id, created_at, updated_at";
 
 pub fn list(conn: &Connection, repository_id: Option<&str>) -> Result<Vec<Workspace>> {
     match repository_id {
@@ -72,14 +76,15 @@ pub fn create(conn: &Connection, input: CreateWorkspaceInput) -> Result<Workspac
     let ts = now();
 
     conn.execute(
-        "INSERT INTO workspaces (id, repository_id, directory_name, branch, state, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO workspaces (id, repository_id, directory_name, branch, state, container_mode, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             id,
             input.repository_id,
             input.directory_name,
             input.branch,
             WorkspaceState::Ready.as_str(),
+            input.container_mode.as_str(),
             ts,
             ts,
         ],
@@ -115,6 +120,25 @@ pub fn archive(conn: &Connection, id: &str) -> Result<Workspace> {
     get(conn, id)
 }
 
+pub fn set_container_id(conn: &Connection, id: &str, container_id: &str) -> Result<()> {
+    let ts = now();
+    conn.execute(
+        "UPDATE workspaces SET container_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![container_id, ts, id],
+    )?;
+    Ok(())
+}
+
+pub fn clear_container_id(conn: &Connection, id: &str) -> Result<()> {
+    let ts = now();
+    let null: Option<&str> = None;
+    conn.execute(
+        "UPDATE workspaces SET container_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![null, ts, id],
+    )?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     let affected = conn.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
@@ -132,7 +156,7 @@ mod tests {
     use super::*;
     use crate::db::repos;
     use crate::db::schema::initialize_database;
-    use crate::models::CreateRepoInput;
+    use crate::models::{ContainerMode, CreateRepoInput};
 
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -167,6 +191,7 @@ mod tests {
                 repository_id: repo.id.clone(),
                 directory_name: "lisbon".to_string(),
                 branch: "bkegley/lisbon".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -185,6 +210,7 @@ mod tests {
                 repository_id: "nonexistent".to_string(),
                 directory_name: "lisbon".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         );
         assert!(matches!(result, Err(BunyanError::NotFound(_))));
@@ -201,6 +227,7 @@ mod tests {
                 repository_id: repo.id,
                 directory_name: "chicago".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -219,6 +246,7 @@ mod tests {
                 repository_id: repo.id,
                 directory_name: "boston".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -243,6 +271,7 @@ mod tests {
                 repository_id: repo1.id.clone(),
                 directory_name: "ws1".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -253,6 +282,7 @@ mod tests {
                 repository_id: repo2.id.clone(),
                 directory_name: "ws2".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -278,6 +308,7 @@ mod tests {
                 repository_id: repo1.id,
                 directory_name: "ws1".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -288,6 +319,7 @@ mod tests {
                 repository_id: repo2.id,
                 directory_name: "ws2".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();
@@ -307,6 +339,7 @@ mod tests {
                 repository_id: repo.id,
                 directory_name: "denver".to_string(),
                 branch: "main".to_string(),
+                container_mode: ContainerMode::Local,
             },
         )
         .unwrap();

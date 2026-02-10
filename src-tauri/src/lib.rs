@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod docker;
 mod error;
 mod git;
 mod models;
@@ -50,6 +51,8 @@ pub fn run() {
             commands::claude::open_shell_pane,
             commands::claude::view_workspace,
             commands::claude::kill_pane,
+            commands::docker::check_docker_available,
+            commands::docker::get_container_status,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw);
 
