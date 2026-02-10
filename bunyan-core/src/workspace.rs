@@ -79,6 +79,178 @@ pub fn validate_session_id(id: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Repo;
+
+    #[test]
+    fn workspace_path_derives_from_repo_root() {
+        let result = workspace_path("/home/user/bunyan/repos/myrepo", "myrepo", "fix-bug").unwrap();
+        assert_eq!(result, "/home/user/bunyan/workspaces/myrepo/fix-bug");
+    }
+
+    #[test]
+    fn workspace_path_different_repo_names() {
+        let result = workspace_path("/data/bunyan/repos/backend", "backend", "feature-x").unwrap();
+        assert_eq!(result, "/data/bunyan/workspaces/backend/feature-x");
+    }
+
+    #[test]
+    fn workspace_path_single_component_errors() {
+        // A path like "/repos" has only one parent ("/"), so second .parent() = None
+        let result = workspace_path("/repos", "myrepo", "fix");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn workspace_path_root_errors() {
+        let result = workspace_path("/", "myrepo", "fix");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_session_id_accepts_uuid() {
+        assert!(validate_session_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+    }
+
+    #[test]
+    fn validate_session_id_accepts_alphanumeric() {
+        assert!(validate_session_id("abc123").is_ok());
+    }
+
+    #[test]
+    fn validate_session_id_accepts_underscores() {
+        assert!(validate_session_id("my_session_id").is_ok());
+    }
+
+    #[test]
+    fn validate_session_id_rejects_empty() {
+        assert!(validate_session_id("").is_err());
+    }
+
+    #[test]
+    fn validate_session_id_rejects_shell_metacharacters() {
+        assert!(validate_session_id("id;rm -rf /").is_err());
+        assert!(validate_session_id("id$(whoami)").is_err());
+        assert!(validate_session_id("id`cmd`").is_err());
+        assert!(validate_session_id("id|cat").is_err());
+        assert!(validate_session_id("id&bg").is_err());
+    }
+
+    #[test]
+    fn validate_session_id_rejects_spaces() {
+        assert!(validate_session_id("id with spaces").is_err());
+    }
+
+    #[test]
+    fn validate_session_id_rejects_slashes() {
+        assert!(validate_session_id("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn build_claude_cmd_without_skip() {
+        assert_eq!(build_claude_cmd("claude", false), "claude");
+    }
+
+    #[test]
+    fn build_claude_cmd_with_skip() {
+        assert_eq!(
+            build_claude_cmd("claude", true),
+            "claude --dangerously-skip-permissions"
+        );
+    }
+
+    #[test]
+    fn build_claude_cmd_continue_with_skip() {
+        assert_eq!(
+            build_claude_cmd("claude --continue", true),
+            "claude --continue --dangerously-skip-permissions"
+        );
+    }
+
+    #[test]
+    fn build_claude_cmd_resume_without_skip() {
+        let cmd = build_claude_cmd("claude --resume abc-123", false);
+        assert_eq!(cmd, "claude --resume abc-123");
+    }
+
+    fn make_repo(config: Option<serde_json::Value>) -> Repo {
+        Repo {
+            id: "id".to_string(),
+            name: "test".to_string(),
+            remote_url: "url".to_string(),
+            default_branch: "main".to_string(),
+            root_path: "/tmp/repos/test".to_string(),
+            remote: "origin".to_string(),
+            display_order: 0,
+            config,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+        }
+    }
+
+    #[test]
+    fn get_container_config_none_when_no_config() {
+        let repo = make_repo(None);
+        assert!(get_container_config(&repo).is_none());
+    }
+
+    #[test]
+    fn get_container_config_none_when_no_container_key() {
+        let repo = make_repo(Some(serde_json::json!({"other": "value"})));
+        assert!(get_container_config(&repo).is_none());
+    }
+
+    #[test]
+    fn get_container_config_parses_valid() {
+        let repo = make_repo(Some(serde_json::json!({
+            "container": {
+                "enabled": true,
+                "image": "python:3.12",
+                "dangerously_skip_permissions": true
+            }
+        })));
+        let cfg = get_container_config(&repo).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.image.unwrap(), "python:3.12");
+        assert!(cfg.dangerously_skip_permissions);
+    }
+
+    #[test]
+    fn get_container_config_ignores_invalid_shape() {
+        let repo = make_repo(Some(serde_json::json!({
+            "container": "not an object"
+        })));
+        assert!(get_container_config(&repo).is_none());
+    }
+
+    #[test]
+    fn should_skip_permissions_false_when_no_config() {
+        let repo = make_repo(None);
+        assert!(!should_skip_permissions(&repo));
+    }
+
+    #[test]
+    fn should_skip_permissions_false_by_default() {
+        let repo = make_repo(Some(serde_json::json!({
+            "container": {"enabled": true}
+        })));
+        assert!(!should_skip_permissions(&repo));
+    }
+
+    #[test]
+    fn should_skip_permissions_true_when_set() {
+        let repo = make_repo(Some(serde_json::json!({
+            "container": {
+                "enabled": true,
+                "dangerously_skip_permissions": true
+            }
+        })));
+        assert!(should_skip_permissions(&repo));
+    }
+}
+
 /// Create a workspace container (Docker container setup for container-mode workspaces).
 /// Returns the updated workspace with container_id set.
 /// Takes Arc<AppState> to avoid holding MutexGuard across await points.

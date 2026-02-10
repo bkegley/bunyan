@@ -37,3 +37,64 @@ impl IntoResponse for ApiError {
         (status, Json(json!({ "error": message }))).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    fn status_of(err: BunyanError) -> StatusCode {
+        let resp = ApiError(err).into_response();
+        resp.status()
+    }
+
+    #[test]
+    fn not_found_maps_to_404() {
+        assert_eq!(status_of(BunyanError::NotFound("x".into())), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn database_maps_to_500() {
+        let db_err = rusqlite::Connection::open_in_memory()
+            .unwrap()
+            .execute("INVALID SQL", [])
+            .unwrap_err();
+        assert_eq!(
+            status_of(BunyanError::Database(db_err)),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn serialization_maps_to_400() {
+        let ser_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        assert_eq!(
+            status_of(BunyanError::Serialization(ser_err)),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn git_maps_to_500() {
+        assert_eq!(
+            status_of(BunyanError::Git("clone failed".into())),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn process_maps_to_500() {
+        assert_eq!(
+            status_of(BunyanError::Process("died".into())),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn docker_maps_to_500() {
+        assert_eq!(
+            status_of(BunyanError::Docker("no daemon".into())),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+}

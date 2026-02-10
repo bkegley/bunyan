@@ -459,3 +459,236 @@ pub fn docker_exec_cmd(container_id: &str, cmd: &str) -> Result<String> {
     validate_container_id(container_id)?;
     Ok(format!("docker exec -it {} {}", shell_escape(container_id), cmd))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- validate_image ---
+
+    #[test]
+    fn validate_image_accepts_allowed_images() {
+        assert!(validate_image("node:22").is_ok());
+        assert!(validate_image("node:latest").is_ok());
+        assert!(validate_image("ubuntu:24.04").is_ok());
+        assert!(validate_image("python:3.12").is_ok());
+        assert!(validate_image("rust:1.80").is_ok());
+        assert!(validate_image("golang:1.22").is_ok());
+        assert!(validate_image("alpine:3.20").is_ok());
+        assert!(validate_image("debian:bookworm").is_ok());
+    }
+
+    #[test]
+    fn validate_image_accepts_bare_names() {
+        assert!(validate_image("node").is_ok());
+        assert!(validate_image("ubuntu").is_ok());
+        assert!(validate_image("python").is_ok());
+    }
+
+    #[test]
+    fn validate_image_accepts_trusted_registries() {
+        assert!(validate_image("mcr.microsoft.com/devcontainers/base:ubuntu").is_ok());
+        assert!(validate_image("ghcr.io/my-org/my-image:latest").is_ok());
+    }
+
+    #[test]
+    fn validate_image_rejects_empty() {
+        assert!(validate_image("").is_err());
+    }
+
+    #[test]
+    fn validate_image_rejects_untrusted() {
+        assert!(validate_image("evil-registry.com/backdoor:latest").is_err());
+        assert!(validate_image("my-custom-image:v1").is_err());
+    }
+
+    #[test]
+    fn validate_image_rejects_shell_metacharacters() {
+        assert!(validate_image("node;rm -rf /").is_err());
+        assert!(validate_image("node$(whoami)").is_err());
+        assert!(validate_image("node`id`").is_err());
+        assert!(validate_image("node|cat /etc/passwd").is_err());
+        assert!(validate_image("node&bg").is_err());
+        assert!(validate_image("node'injection").is_err());
+        assert!(validate_image("node\"injection").is_err());
+        assert!(validate_image("node\\injection").is_err());
+        assert!(validate_image("node\nnewline").is_err());
+    }
+
+    // --- validate_env ---
+
+    #[test]
+    fn validate_env_accepts_safe_vars() {
+        let env = vec![
+            "NODE_ENV=development".to_string(),
+            "MY_VAR=value".to_string(),
+        ];
+        assert!(validate_env(&env).is_ok());
+    }
+
+    #[test]
+    fn validate_env_accepts_empty() {
+        assert!(validate_env(&[]).is_ok());
+    }
+
+    #[test]
+    fn validate_env_rejects_ld_preload() {
+        let env = vec!["LD_PRELOAD=/evil.so".to_string()];
+        assert!(validate_env(&env).is_err());
+    }
+
+    #[test]
+    fn validate_env_rejects_path() {
+        let env = vec!["PATH=/evil/bin".to_string()];
+        assert!(validate_env(&env).is_err());
+    }
+
+    #[test]
+    fn validate_env_rejects_docker_host() {
+        let env = vec!["DOCKER_HOST=tcp://attacker:2375".to_string()];
+        assert!(validate_env(&env).is_err());
+    }
+
+    #[test]
+    fn validate_env_rejects_home() {
+        let env = vec!["HOME=/tmp".to_string()];
+        assert!(validate_env(&env).is_err());
+    }
+
+    #[test]
+    fn validate_env_case_insensitive() {
+        let env = vec!["ld_preload=/evil.so".to_string()];
+        assert!(validate_env(&env).is_err());
+    }
+
+    #[test]
+    fn validate_env_rejects_first_bad_in_list() {
+        let env = vec![
+            "SAFE_VAR=ok".to_string(),
+            "LD_LIBRARY_PATH=/evil".to_string(),
+            "ANOTHER=fine".to_string(),
+        ];
+        assert!(validate_env(&env).is_err());
+    }
+
+    // --- sanitize_docker_name ---
+
+    #[test]
+    fn sanitize_docker_name_passthrough_valid() {
+        assert_eq!(sanitize_docker_name("bunyan-myrepo"), "bunyan-myrepo");
+    }
+
+    #[test]
+    fn sanitize_docker_name_replaces_slashes() {
+        assert_eq!(sanitize_docker_name("bunyan/my/repo"), "bunyan-my-repo");
+    }
+
+    #[test]
+    fn sanitize_docker_name_replaces_spaces() {
+        assert_eq!(sanitize_docker_name("my repo name"), "my-repo-name");
+    }
+
+    #[test]
+    fn sanitize_docker_name_allows_dots_underscores() {
+        assert_eq!(sanitize_docker_name("my.repo_name"), "my.repo_name");
+    }
+
+    #[test]
+    fn sanitize_docker_name_prefixes_non_alnum_start() {
+        assert_eq!(sanitize_docker_name("-starts-with-dash"), "x-starts-with-dash");
+        assert_eq!(sanitize_docker_name(".dotstart"), "x.dotstart");
+        assert_eq!(sanitize_docker_name("_understart"), "x_understart");
+    }
+
+    #[test]
+    fn sanitize_docker_name_replaces_special_chars() {
+        assert_eq!(sanitize_docker_name("a@b#c$d"), "a-b-c-d");
+    }
+
+    // --- shell_escape ---
+
+    #[test]
+    fn shell_escape_simple() {
+        assert_eq!(shell_escape("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_escape_with_single_quotes() {
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_escape_with_spaces() {
+        assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn shell_escape_with_semicolons() {
+        assert_eq!(shell_escape("cmd;evil"), "'cmd;evil'");
+    }
+
+    #[test]
+    fn shell_escape_empty() {
+        assert_eq!(shell_escape(""), "''");
+    }
+
+    // --- validate_container_id ---
+
+    #[test]
+    fn validate_container_id_accepts_hex() {
+        assert!(validate_container_id("abc123def456").is_ok());
+    }
+
+    #[test]
+    fn validate_container_id_accepts_name_with_dashes() {
+        assert!(validate_container_id("bunyan-myrepo-fix").is_ok());
+    }
+
+    #[test]
+    fn validate_container_id_accepts_dots_underscores() {
+        assert!(validate_container_id("my.container_name").is_ok());
+    }
+
+    #[test]
+    fn validate_container_id_rejects_empty() {
+        assert!(validate_container_id("").is_err());
+    }
+
+    #[test]
+    fn validate_container_id_rejects_shell_injection() {
+        assert!(validate_container_id("id;rm -rf /").is_err());
+        assert!(validate_container_id("id$(cmd)").is_err());
+        assert!(validate_container_id("id`whoami`").is_err());
+        assert!(validate_container_id("id|cat").is_err());
+    }
+
+    #[test]
+    fn validate_container_id_rejects_spaces() {
+        assert!(validate_container_id("id with spaces").is_err());
+    }
+
+    #[test]
+    fn validate_container_id_rejects_slashes() {
+        assert!(validate_container_id("../../etc").is_err());
+    }
+
+    // --- docker_exec_cmd ---
+
+    #[test]
+    fn docker_exec_cmd_builds_valid_command() {
+        let result = docker_exec_cmd("abc123", "/bin/bash").unwrap();
+        assert_eq!(result, "docker exec -it 'abc123' /bin/bash");
+    }
+
+    #[test]
+    fn docker_exec_cmd_rejects_invalid_container_id() {
+        assert!(docker_exec_cmd("id;evil", "bash").is_err());
+        assert!(docker_exec_cmd("", "bash").is_err());
+    }
+
+    #[test]
+    fn docker_exec_cmd_escapes_container_name_with_dots() {
+        let result = docker_exec_cmd("bunyan-repo.fix-1", "claude").unwrap();
+        assert_eq!(result, "docker exec -it 'bunyan-repo.fix-1' claude");
+    }
+}

@@ -75,6 +75,14 @@ impl BunyanClient {
     }
 }
 
+/// Visible for testing — extract the base URL.
+#[cfg(test)]
+impl BunyanClient {
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
 fn handle_response<T: DeserializeOwned>(resp: reqwest::blocking::Response) -> Result<T, String> {
     let status = resp.status();
     if !status.is_success() {
@@ -87,4 +95,27 @@ fn handle_response<T: DeserializeOwned>(resp: reqwest::blocking::Response) -> Re
         return Err(format!("HTTP {}: {}", status, body));
     }
     resp.json::<T>().map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_strips_trailing_slash() {
+        let client = BunyanClient::new("http://localhost:3333/");
+        assert_eq!(client.base_url(), "http://localhost:3333");
+    }
+
+    #[test]
+    fn new_preserves_url_without_trailing_slash() {
+        let client = BunyanClient::new("http://localhost:3333");
+        assert_eq!(client.base_url(), "http://localhost:3333");
+    }
+
+    #[test]
+    fn new_strips_multiple_trailing_slashes() {
+        let client = BunyanClient::new("http://localhost:3333///");
+        assert_eq!(client.base_url(), "http://localhost:3333");
+    }
 }
