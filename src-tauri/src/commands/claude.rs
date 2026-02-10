@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use tauri::State;
 
-use crate::db;
-use crate::docker;
-use crate::models::{ClaudeSessionEntry, ContainerConfig, ContainerMode, TmuxPane, WorkspacePaneInfo};
-use crate::state::AppState;
-use crate::terminal;
-use crate::tmux;
+use bunyan_core::db;
+use bunyan_core::docker;
+use bunyan_core::models::{ClaudeSessionEntry, ContainerConfig, ContainerMode, TmuxPane, WorkspacePaneInfo};
+use bunyan_core::state::AppState;
+use bunyan_core::terminal;
+use bunyan_core::tmux;
 
 /// Validate that a session ID is a safe UUID-like string (hex + dashes).
 fn validate_session_id(id: &str) -> Result<(), String> {
@@ -21,7 +21,7 @@ fn validate_session_id(id: &str) -> Result<(), String> {
 }
 
 /// Check if dangerously_skip_permissions is enabled in the repo's container config.
-fn should_skip_permissions(repo: &crate::models::Repo) -> bool {
+fn should_skip_permissions(repo: &bunyan_core::models::Repo) -> bool {
     repo.config
         .as_ref()
         .and_then(|v| v.get("container"))
@@ -44,7 +44,7 @@ fn build_claude_cmd(base: &str, skip_permissions: bool) -> String {
 fn resolve_workspace_path(
     conn: &rusqlite::Connection,
     workspace_id: &str,
-) -> Result<(crate::models::Workspace, crate::models::Repo, String), String> {
+) -> Result<(bunyan_core::models::Workspace, bunyan_core::models::Repo, String), String> {
     let ws = db::workspaces::get(conn, workspace_id).map_err(|e| e.to_string())?;
     let rp = db::repos::get(conn, &ws.repository_id).map_err(|e| e.to_string())?;
     let base = PathBuf::from(&rp.root_path)
@@ -588,11 +588,11 @@ pub async fn open_shell_pane(
         let output = std::process::Command::new("tmux")
             .args(&args)
             .output()
-            .map_err(|e| crate::error::BunyanError::Process(format!("Failed to split window: {}", e)))?;
+            .map_err(|e| bunyan_core::error::BunyanError::Process(format!("Failed to split window: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(crate::error::BunyanError::Process(format!(
+            return Err(bunyan_core::error::BunyanError::Process(format!(
                 "tmux split-window failed: {}",
                 stderr
             )));

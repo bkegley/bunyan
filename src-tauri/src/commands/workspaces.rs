@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::commands::claude;
-use crate::db;
-use crate::docker;
-use crate::git::{GitOps, RealGit};
-use crate::models::{ContainerConfig, ContainerMode, CreateWorkspaceInput, Workspace};
-use crate::state::AppState;
+use bunyan_core::db;
+use bunyan_core::docker;
+use bunyan_core::git::{GitOps, RealGit};
+use bunyan_core::models::{ContainerConfig, ContainerMode, CreateWorkspaceInput, Workspace};
+use bunyan_core::state::AppState;
 
 fn workspace_path(repo_root: &str, repo_name: &str, dir_name: &str) -> Result<String, String> {
     let repo_path = PathBuf::from(repo_root);

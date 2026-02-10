@@ -4,6 +4,7 @@ use crate::error::Result;
 
 pub fn initialize_database(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = ON")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL")?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS repos (

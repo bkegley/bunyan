@@ -1,9 +1,9 @@
 use tauri::State;
 
-use crate::db;
-use crate::git::{GitOps, RealGit};
-use crate::models::{CreateRepoInput, Repo, UpdateRepoInput};
-use crate::state::AppState;
+use bunyan_core::db;
+use bunyan_core::git::{GitOps, RealGit};
+use bunyan_core::models::{CreateRepoInput, Repo, UpdateRepoInput};
+use bunyan_core::state::AppState;
 
 #[tauri::command]
 #[specta::specta]

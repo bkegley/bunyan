@@ -1,8 +1,8 @@
 use tauri::State;
 
-use crate::db;
-use crate::models::Setting;
-use crate::state::AppState;
+use bunyan_core::db;
+use bunyan_core::models::Setting;
+use bunyan_core::state::AppState;
 
 #[tauri::command]
 #[specta::specta]

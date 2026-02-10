@@ -1,33 +1,15 @@
 mod commands;
-mod db;
-mod docker;
-mod error;
-mod git;
-mod models;
-mod state;
-mod terminal;
-mod tmux;
 
 use rusqlite::Connection;
 
-fn get_db_path() -> std::path::PathBuf {
-    let app_dir = dirs::data_local_dir()
-        .expect("Could not determine app data directory")
-        .join("com.bunyan.app");
-
-    std::fs::create_dir_all(&app_dir).expect("Could not create app data directory");
-
-    app_dir.join("bunyan.db")
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let db_path = get_db_path();
+    let db_path = bunyan_core::get_db_path();
     let conn = Connection::open(&db_path).expect("Failed to open database");
 
-    db::initialize_database(&conn).expect("Failed to initialize database schema");
+    bunyan_core::db::initialize_database(&conn).expect("Failed to initialize database schema");
 
-    let app_state = state::AppState::new(conn);
+    let app_state = bunyan_core::state::AppState::new(conn);
 
     let builder = tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![
@@ -64,6 +46,17 @@ pub fn run() {
             "../src/bindings.ts",
         )
         .expect("Failed to export typescript bindings");
+
+    // Spawn HTTP server on a background thread with its own AppState
+    let server_port: u16 = std::env::var("BUNYAN_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3333);
+    let server_state = bunyan_core::init_state();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(bunyan_core::server::start_server(server_state, server_port));
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

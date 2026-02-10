@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Repo {
     pub id: String,
     pub name: String,
@@ -15,7 +16,8 @@ pub struct Repo {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize, specta::Type)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CreateRepoInput {
     pub name: String,
     pub remote_url: String,
@@ -36,7 +38,8 @@ fn default_remote() -> String {
     "origin".to_string()
 }
 
-#[derive(Debug, Deserialize, specta::Type)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct UpdateRepoInput {
     pub id: String,
     pub name: Option<String>,
@@ -45,7 +48,8 @@ pub struct UpdateRepoInput {
     pub config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceState {
     Ready,
@@ -69,7 +73,8 @@ impl WorkspaceState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerMode {
     Local,
@@ -97,7 +102,8 @@ fn default_container_mode() -> ContainerMode {
     ContainerMode::Local
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ContainerConfig {
     pub enabled: bool,
     pub image: Option<String>,
@@ -108,7 +114,8 @@ pub struct ContainerConfig {
     pub dangerously_skip_permissions: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Workspace {
     pub id: String,
     pub repository_id: String,
@@ -121,7 +128,8 @@ pub struct Workspace {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize, specta::Type)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CreateWorkspaceInput {
     pub repository_id: String,
     pub directory_name: String,
@@ -130,7 +138,8 @@ pub struct CreateWorkspaceInput {
     pub container_mode: ContainerMode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Setting {
     pub key: String,
     pub value: String,
@@ -139,7 +148,8 @@ pub struct Setting {
 }
 
 /// A tmux pane within the Bunyan-managed tmux server.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TmuxPane {
     /// Pane index within its window
     pub pane_index: u32,
@@ -154,7 +164,8 @@ pub struct TmuxPane {
 }
 
 /// Info about all panes in a workspace's tmux window.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WorkspacePaneInfo {
     pub workspace_id: String,
     pub repo_name: String,
@@ -163,7 +174,8 @@ pub struct WorkspacePaneInfo {
 }
 
 /// Port mapping for a running container.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct PortMapping {
     pub container_port: String, // e.g. "3000/tcp"
     pub host_port: String,      // e.g. "3000"
@@ -171,7 +183,8 @@ pub struct PortMapping {
 }
 
 /// A single session entry from ~/.claude/projects/<path>/sessions-index.json
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ClaudeSessionEntry {
     #[serde(alias = "sessionId")]
     pub session_id: String,

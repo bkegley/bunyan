@@ -1,9 +1,9 @@
 use tauri::State;
 
-use crate::db;
-use crate::docker;
-use crate::models::PortMapping;
-use crate::state::AppState;
+use bunyan_core::db;
+use bunyan_core::docker;
+use bunyan_core::models::PortMapping;
+use bunyan_core::state::AppState;
 
 #[tauri::command]
 #[specta::specta]

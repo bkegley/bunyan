@@ -311,16 +311,13 @@ pub async fn ensure_claude(container_id: &str) -> Result<()> {
         .await?;
 
     let result = docker.start_exec(&exec.id, None).await?;
-    let mut found = false;
     if let StartExecResults::Attached { mut output, .. } = result {
         while let Some(Ok(_)) = output.next().await {}
     }
 
     // Check exit code
     let inspect = docker.inspect_exec(&exec.id).await?;
-    if inspect.exit_code == Some(0) {
-        found = true;
-    }
+    let found = inspect.exit_code == Some(0);
 
     if !found {
         // Install claude via npm
