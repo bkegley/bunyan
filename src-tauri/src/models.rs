@@ -162,6 +162,14 @@ pub struct WorkspacePaneInfo {
     pub panes: Vec<TmuxPane>,
 }
 
+/// Port mapping for a running container.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PortMapping {
+    pub container_port: String, // e.g. "3000/tcp"
+    pub host_port: String,      // e.g. "3000"
+    pub host_ip: String,        // e.g. "0.0.0.0"
+}
+
 /// A single session entry from ~/.claude/projects/<path>/sessions-index.json
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ClaudeSessionEntry {

@@ -7,10 +7,12 @@ use bollard::container::{
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, Mount, MountTypeEnum, PortBinding};
+use bollard::network::CreateNetworkOptions;
 use bollard::Docker;
 use futures_util::StreamExt;
 
 use crate::error::{BunyanError, Result};
+use crate::models::PortMapping;
 
 /// Check if the Docker daemon is reachable.
 pub async fn check_docker() -> Result<bool> {
@@ -32,6 +34,8 @@ pub async fn create_workspace_container(
     container_name: &str,
     ports: &[String],
     env: &[String],
+    network_name: Option<&str>,
+    directory_name: &str,
 ) -> Result<String> {
     let docker = Docker::connect_with_local_defaults()?;
 
@@ -71,9 +75,10 @@ pub async fn create_workspace_container(
 
     // Build mounts
     let home = dirs::home_dir().ok_or_else(|| BunyanError::Docker("Cannot determine home directory".to_string()))?;
+    let mount_target = format!("/workspace/{}", directory_name);
     let mut mounts = vec![
         Mount {
-            target: Some("/workspace".to_string()),
+            target: Some(mount_target.clone()),
             source: Some(workspace_path.to_string()),
             typ: Some(MountTypeEnum::BIND),
             ..Default::default()
@@ -125,13 +130,14 @@ pub async fn create_workspace_container(
     let host_config = HostConfig {
         mounts: Some(mounts),
         port_bindings: Some(port_bindings),
+        network_mode: network_name.map(|n| n.to_string()),
         ..Default::default()
     };
 
     let config = Config {
         image: Some(image.to_string()),
         cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
-        working_dir: Some("/workspace".to_string()),
+        working_dir: Some(mount_target),
         env: Some(env.to_vec()),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
@@ -263,6 +269,64 @@ pub async fn get_container_status(container_id: &str) -> Result<String> {
         }) => Ok("none".to_string()),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Create a Docker bridge network. Idempotent — ignores "already exists" errors.
+pub async fn create_network(network_name: &str) -> Result<()> {
+    let docker = Docker::connect_with_local_defaults()?;
+
+    let config = CreateNetworkOptions {
+        name: network_name,
+        driver: "bridge",
+        ..Default::default()
+    };
+
+    match docker.create_network(config).await {
+        Ok(_) => Ok(()),
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 409, ..
+        }) => Ok(()), // network already exists
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Remove a Docker network. Idempotent — ignores 404.
+pub async fn remove_network(network_name: &str) -> Result<()> {
+    let docker = Docker::connect_with_local_defaults()?;
+
+    match docker.remove_network(network_name).await {
+        Ok(_) => Ok(()),
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get port mappings for a running container.
+pub async fn get_container_ports(container_id: &str) -> Result<Vec<PortMapping>> {
+    let docker = Docker::connect_with_local_defaults()?;
+    let info = docker.inspect_container(container_id, None).await?;
+
+    let mut mappings = Vec::new();
+
+    if let Some(network_settings) = info.network_settings {
+        if let Some(ports) = network_settings.ports {
+            for (container_port, bindings) in ports {
+                if let Some(bindings) = bindings {
+                    for binding in bindings {
+                        mappings.push(PortMapping {
+                            container_port: container_port.clone(),
+                            host_port: binding.host_port.unwrap_or_default(),
+                            host_ip: binding.host_ip.unwrap_or_else(|| "0.0.0.0".to_string()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(mappings)
 }
 
 /// Build the `docker exec` command string for a tmux pane.

@@ -129,6 +129,15 @@ pub fn set_container_id(conn: &Connection, id: &str, container_id: &str) -> Resu
     Ok(())
 }
 
+pub fn count_container_workspaces(conn: &Connection, repo_id: &str) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM workspaces WHERE repository_id = ?1 AND container_mode = 'container' AND state = 'ready'",
+        params![repo_id],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
 pub fn clear_container_id(conn: &Connection, id: &str) -> Result<()> {
     let ts = now();
     let null: Option<&str> = None;

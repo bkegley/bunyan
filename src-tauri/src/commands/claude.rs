@@ -53,9 +53,17 @@ fn resolve_workspace_path(
 
 /// Read sessions for a workspace. Tries sessions-index.json first, falls back
 /// to scanning JSONL files directly.
-fn read_sessions(workspace_path: &str) -> Result<Vec<ClaudeSessionEntry>, String> {
+fn read_sessions(
+    workspace_path: &str,
+    container_mode: &ContainerMode,
+    directory_name: &str,
+) -> Result<Vec<ClaudeSessionEntry>, String> {
     let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let sanitized = workspace_path.replace('/', "-");
+    let sanitized = if *container_mode == ContainerMode::Container {
+        format!("/workspace/{}", directory_name).replace('/', "-")
+    } else {
+        workspace_path.replace('/', "-")
+    };
     let project_dir = home
         .join(".claude")
         .join("projects")
@@ -199,13 +207,21 @@ fn read_sessions_from_jsonl(project_dir: &Path) -> Result<Vec<ClaudeSessionEntry
     Ok(sessions)
 }
 
-fn has_existing_session(workspace_path: &str) -> bool {
+fn has_existing_session(
+    workspace_path: &str,
+    container_mode: &ContainerMode,
+    directory_name: &str,
+) -> bool {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return false,
     };
 
-    let sanitized = workspace_path.replace('/', "-");
+    let sanitized = if *container_mode == ContainerMode::Container {
+        format!("/workspace/{}", directory_name).replace('/', "-")
+    } else {
+        workspace_path.replace('/', "-")
+    };
     let sessions_path = home
         .join(".claude")
         .join("projects")
@@ -321,9 +337,13 @@ pub async fn open_claude_session(
 
     // No Claude running — determine command
     let resume_path = ws_path.clone();
-    let has_previous = tokio::task::spawn_blocking(move || has_existing_session(&resume_path))
-        .await
-        .map_err(|e| e.to_string())?;
+    let resume_container_mode = workspace.container_mode.clone();
+    let resume_dir_name = workspace.directory_name.clone();
+    let has_previous = tokio::task::spawn_blocking(move || {
+        has_existing_session(&resume_path, &resume_container_mode, &resume_dir_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     let skip_perms = workspace.container_mode == ContainerMode::Container
         && should_skip_permissions(&repo);
@@ -478,13 +498,14 @@ pub async fn get_workspace_sessions(
     state: State<'_, AppState>,
     workspace_id: String,
 ) -> Result<Vec<ClaudeSessionEntry>, String> {
-    let ws_path_str = {
+    let (workspace, _, ws_path_str) = {
         let conn = state.db.lock().unwrap();
-        let (_, _, path) = resolve_workspace_path(&conn, &workspace_id)?;
-        path
+        resolve_workspace_path(&conn, &workspace_id)?
     };
 
-    tokio::task::spawn_blocking(move || read_sessions(&ws_path_str))
+    let container_mode = workspace.container_mode.clone();
+    let dir_name = workspace.directory_name.clone();
+    tokio::task::spawn_blocking(move || read_sessions(&ws_path_str, &container_mode, &dir_name))
         .await
         .map_err(|e| e.to_string())?
 }

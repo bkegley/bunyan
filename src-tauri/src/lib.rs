@@ -53,6 +53,7 @@ pub fn run() {
             commands::claude::kill_pane,
             commands::docker::check_docker_available,
             commands::docker::get_container_status,
+            commands::docker::get_container_ports,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw);
 

@@ -94,10 +94,22 @@ pub async fn create_workspace(
         let wt_path = workspace_path(&repo.root_path, &repo.name, &workspace.directory_name)?;
         let container_name = format!("bunyan-{}-{}", repo.name, workspace.directory_name);
 
-        let container_id =
-            docker::create_workspace_container(&image, &wt_path, &container_name, &ports, &env)
-                .await
-                .map_err(|e| e.to_string())?;
+        let network_name = format!("bunyan-{}", repo.name);
+        docker::create_network(&network_name)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let container_id = docker::create_workspace_container(
+            &image,
+            &wt_path,
+            &container_name,
+            &ports,
+            &env,
+            Some(&network_name),
+            &workspace.directory_name,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         // Best-effort: install claude in the container
         if let Err(e) = docker::ensure_claude(&container_id).await {
@@ -137,6 +149,18 @@ pub async fn archive_workspace(
             if let Err(e) = docker::remove_container(container_id).await {
                 eprintln!("Warning: failed to remove container {}: {}", container_id, e);
             }
+        }
+
+        // Clean up the network if no other container workspaces remain for this repo.
+        // We check *before* archiving since the current workspace is still "ready".
+        // Subtract 1 because the current workspace hasn't been archived yet.
+        let remaining = {
+            let conn = state.db.lock().unwrap();
+            db::workspaces::count_container_workspaces(&conn, &repo.id)
+                .map_err(|e| e.to_string())?
+        };
+        if remaining <= 1 {
+            let _ = docker::remove_network(&format!("bunyan-{}", repo.name)).await;
         }
     }
 
