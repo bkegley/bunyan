@@ -339,10 +339,22 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
                   <input
                     type="checkbox"
                     checked={skipPermissions}
-                    onChange={(e) => setSkipPermissions(e.target.checked)}
+                    onChange={(e) => {
+                      if (e.target.checked && !window.confirm(
+                        "WARNING: This allows Claude to execute arbitrary code, write files, and make network requests without any approval prompts. Your ~/.ssh keys and ~/.claude config are mounted into the container. Only enable this if you trust the codebase completely. Continue?"
+                      )) {
+                        return;
+                      }
+                      setSkipPermissions(e.target.checked);
+                    }}
                   />
                   Skip permissions
                 </label>
+                {skipPermissions && (
+                  <div className="settings-warning">
+                    Claude will run without permission checks. SSH keys and API credentials are accessible inside the container.
+                  </div>
+                )}
               </div>
             </>
           )}

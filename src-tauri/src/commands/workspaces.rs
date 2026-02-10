@@ -92,9 +92,9 @@ pub async fn create_workspace(
             .unwrap_or_default();
 
         let wt_path = workspace_path(&repo.root_path, &repo.name, &workspace.directory_name)?;
-        let container_name = format!("bunyan-{}-{}", repo.name, workspace.directory_name);
+        let container_name = docker::sanitize_docker_name(&format!("bunyan-{}-{}", repo.name, workspace.directory_name));
 
-        let network_name = format!("bunyan-{}", repo.name);
+        let network_name = docker::sanitize_docker_name(&format!("bunyan-{}", repo.name));
         docker::create_network(&network_name)
             .await
             .map_err(|e| e.to_string())?;
@@ -160,7 +160,7 @@ pub async fn archive_workspace(
                 .map_err(|e| e.to_string())?
         };
         if remaining <= 1 {
-            let _ = docker::remove_network(&format!("bunyan-{}", repo.name)).await;
+            let _ = docker::remove_network(&docker::sanitize_docker_name(&format!("bunyan-{}", repo.name))).await;
         }
     }
 

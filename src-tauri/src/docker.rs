@@ -14,6 +14,90 @@ use futures_util::StreamExt;
 use crate::error::{BunyanError, Result};
 use crate::models::PortMapping;
 
+/// Allowed base image prefixes. Images must start with one of these.
+/// Covers official Docker Hub images and common trusted registries.
+const ALLOWED_IMAGE_PREFIXES: &[&str] = &[
+    "node:",
+    "ubuntu:",
+    "debian:",
+    "alpine:",
+    "python:",
+    "rust:",
+    "golang:",
+    "mcr.microsoft.com/",
+    "ghcr.io/",
+    // Also allow bare names (e.g. "node" without tag)
+    "node",
+    "ubuntu",
+    "debian",
+    "alpine",
+    "python",
+    "rust",
+    "golang",
+];
+
+/// Validate that a Docker image is from a trusted source.
+pub fn validate_image(image: &str) -> Result<()> {
+    if image.is_empty() {
+        return Err(BunyanError::Docker("Empty image name".to_string()));
+    }
+    // Reject images with shell metacharacters
+    if image.chars().any(|c| matches!(c, ';' | '&' | '|' | '$' | '`' | '\'' | '"' | '\\' | '\n')) {
+        return Err(BunyanError::Docker(format!("Image name contains invalid characters: {}", image)));
+    }
+    let is_allowed = ALLOWED_IMAGE_PREFIXES.iter().any(|prefix| image.starts_with(prefix));
+    if !is_allowed {
+        return Err(BunyanError::Docker(format!(
+            "Image '{}' is not in the allowlist. Allowed: node, ubuntu, debian, alpine, python, rust, golang, mcr.microsoft.com/*, ghcr.io/*",
+            image
+        )));
+    }
+    Ok(())
+}
+
+/// Environment variable names that are blocked from being passed to containers.
+const BLOCKED_ENV_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "HOSTNAME",
+    "DOCKER_HOST",
+];
+
+/// Validate environment variables, rejecting dangerous overrides.
+pub fn validate_env(env: &[String]) -> Result<()> {
+    for entry in env {
+        if let Some(key) = entry.split('=').next() {
+            let upper = key.to_uppercase();
+            if BLOCKED_ENV_VARS.contains(&upper.as_str()) {
+                return Err(BunyanError::Docker(format!(
+                    "Environment variable '{}' is not allowed (security-sensitive)",
+                    key
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sanitize a string for use as a Docker container or network name.
+/// Replaces invalid characters with dashes and ensures it starts with alphanumeric.
+pub fn sanitize_docker_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '-' })
+        .collect();
+    // Ensure it starts with alphanumeric
+    if sanitized.starts_with(|c: char| !c.is_ascii_alphanumeric()) {
+        format!("x{}", sanitized)
+    } else {
+        sanitized
+    }
+}
+
 /// Check if the Docker daemon is reachable.
 pub async fn check_docker() -> Result<bool> {
     let docker = match Docker::connect_with_local_defaults() {
@@ -37,6 +121,9 @@ pub async fn create_workspace_container(
     network_name: Option<&str>,
     directory_name: &str,
 ) -> Result<String> {
+    validate_image(image)?;
+    validate_env(env)?;
+
     let docker = Docker::connect_with_local_defaults()?;
 
     // Pull image if not available locally
@@ -87,6 +174,7 @@ pub async fn create_workspace_container(
             target: Some("/home/dev/.claude".to_string()),
             source: Some(home.join(".claude").to_string_lossy().to_string()),
             typ: Some(MountTypeEnum::BIND),
+            read_only: Some(true),
             ..Default::default()
         },
         Mount {
@@ -109,19 +197,34 @@ pub async fn create_workspace_container(
         });
     }
 
-    // Build port bindings
+    // Build port bindings (validated)
     let mut exposed_ports = HashMap::new();
     let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     for port_spec in ports {
         // Format: "host_port:container_port"
         if let Some((host_port, container_port)) = port_spec.split_once(':') {
-            let key = format!("{}/tcp", container_port);
+            let hp: u16 = host_port.parse().map_err(|_| {
+                BunyanError::Docker(format!("Invalid host port: {}", host_port))
+            })?;
+            let cp: u16 = container_port.parse().map_err(|_| {
+                BunyanError::Docker(format!("Invalid container port: {}", container_port))
+            })?;
+            if hp < 1024 {
+                return Err(BunyanError::Docker(format!(
+                    "Host port {} is privileged (< 1024). Use a port >= 1024.",
+                    hp
+                )));
+            }
+            if cp == 0 {
+                return Err(BunyanError::Docker("Container port cannot be 0".to_string()));
+            }
+            let key = format!("{}/tcp", cp);
             exposed_ports.insert(key.clone(), HashMap::new());
             port_bindings.insert(
                 key,
                 Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(host_port.to_string()),
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: Some(hp.to_string()),
                 }]),
             );
         }
@@ -131,6 +234,10 @@ pub async fn create_workspace_container(
         mounts: Some(mounts),
         port_bindings: Some(port_bindings),
         network_mode: network_name.map(|n| n.to_string()),
+        // Resource limits to prevent DoS
+        nano_cpus: Some(4_000_000_000),   // 4 CPU cores
+        memory: Some(8 * 1024 * 1024 * 1024), // 8 GB
+        pids_limit: Some(512),
         ..Default::default()
     };
 
@@ -141,6 +248,7 @@ pub async fn create_workspace_container(
         env: Some(env.to_vec()),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
+        user: Some("1000:1000".to_string()),
         ..Default::default()
     };
 
@@ -329,7 +437,28 @@ pub async fn get_container_ports(container_id: &str) -> Result<Vec<PortMapping>>
     Ok(mappings)
 }
 
+/// Shell-escape a string for safe inclusion in a shell command.
+/// Wraps in single quotes and escapes embedded single quotes.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Validate that a string is a safe Docker container ID (hex hash or name).
+fn validate_container_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        return Err(BunyanError::Docker("Empty container ID".to_string()));
+    }
+    // Docker container IDs are hex strings; names match [a-zA-Z0-9][a-zA-Z0-9_.-]
+    let is_valid = id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
+    if !is_valid {
+        return Err(BunyanError::Docker(format!("Invalid container ID: {}", id)));
+    }
+    Ok(())
+}
+
 /// Build the `docker exec` command string for a tmux pane.
-pub fn docker_exec_cmd(container_id: &str, cmd: &str) -> String {
-    format!("docker exec -it {} {}", container_id, cmd)
+/// Shell-escapes both container_id and cmd to prevent injection.
+pub fn docker_exec_cmd(container_id: &str, cmd: &str) -> Result<String> {
+    validate_container_id(container_id)?;
+    Ok(format!("docker exec -it {} {}", shell_escape(container_id), cmd))
 }

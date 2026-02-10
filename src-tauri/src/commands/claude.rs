@@ -8,6 +8,18 @@ use crate::state::AppState;
 use crate::terminal;
 use crate::tmux;
 
+/// Validate that a session ID is a safe UUID-like string (hex + dashes).
+fn validate_session_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("Empty session ID".to_string());
+    }
+    let is_valid = id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !is_valid {
+        return Err(format!("Invalid session ID: {}", id));
+    }
+    Ok(())
+}
+
 /// Check if dangerously_skip_permissions is enabled in the repo's container config.
 fn should_skip_permissions(repo: &crate::models::Repo) -> bool {
     repo.config
@@ -356,7 +368,7 @@ pub async fn open_claude_session(
 
     let claude_cmd = if workspace.container_mode == ContainerMode::Container {
         match &workspace.container_id {
-            Some(cid) => docker::docker_exec_cmd(cid, &base_cmd),
+            Some(cid) => docker::docker_exec_cmd(cid, &base_cmd).map_err(|e| e.to_string())?,
             None => base_cmd,
         }
     } else {
@@ -430,13 +442,16 @@ pub async fn resume_claude_session(
         return Ok("attached".to_string());
     }
 
+    // Validate session_id before using it in a shell command
+    validate_session_id(&session_id)?;
+
     // Session not running — resume it
     let skip_perms = workspace.container_mode == ContainerMode::Container
         && should_skip_permissions(&repo);
     let base_cmd = build_claude_cmd(&format!("claude --resume {}", session_id), skip_perms);
     let claude_cmd = if workspace.container_mode == ContainerMode::Container {
         match &workspace.container_id {
-            Some(cid) => docker::docker_exec_cmd(cid, &base_cmd),
+            Some(cid) => docker::docker_exec_cmd(cid, &base_cmd).map_err(|e| e.to_string())?,
             None => base_cmd,
         }
     } else {
@@ -549,10 +564,10 @@ pub async fn open_shell_pane(
 
     // Determine shell command based on container mode
     let shell_cmd = if workspace.container_mode == ContainerMode::Container {
-        workspace
-            .container_id
-            .as_ref()
-            .map(|cid| docker::docker_exec_cmd(cid, "/bin/bash"))
+        match workspace.container_id.as_ref() {
+            Some(cid) => Some(docker::docker_exec_cmd(cid, "/bin/bash").map_err(|e| e.to_string())?),
+            None => None,
+        }
     } else {
         None
     };

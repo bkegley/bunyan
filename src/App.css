@@ -227,6 +227,17 @@
   border-top: 1px solid #e8e8e8;
 }
 
+.settings-warning {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #b35900;
+  background: #fff3e0;
+  border: 1px solid #ffe0b2;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
 /* Workspace List */
 
 .workspace-list {
