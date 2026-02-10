@@ -93,6 +93,15 @@ async viewWorkspace(workspaceId: string) : Promise<string> {
  */
 async killPane(workspaceId: string, paneIndex: number) : Promise<string> {
     return await TAURI_INVOKE("kill_pane", { workspaceId, paneIndex });
+},
+async checkDockerAvailable() : Promise<boolean> {
+    return await TAURI_INVOKE("check_docker_available");
+},
+async getContainerStatus(workspaceId: string) : Promise<string> {
+    return await TAURI_INVOKE("get_container_status", { workspaceId });
+},
+async getContainerPorts(workspaceId: string) : Promise<PortMapping[]> {
+    return await TAURI_INVOKE("get_container_ports", { workspaceId });
 }
 }
 
@@ -110,9 +119,14 @@ async killPane(workspaceId: string, paneIndex: number) : Promise<string> {
  * A single session entry from ~/.claude/projects/<path>/sessions-index.json
  */
 export type ClaudeSessionEntry = { session_id: string; first_prompt: string | null; message_count: number | null; created: string | null; modified: string | null; git_branch: string | null; is_sidechain: boolean | null }
+export type ContainerMode = "local" | "container"
 export type CreateRepoInput = { name: string; remote_url: string; root_path: string; default_branch?: string; remote?: string; display_order?: number; config: JsonValue | null }
-export type CreateWorkspaceInput = { repository_id: string; directory_name: string; branch: string }
+export type CreateWorkspaceInput = { repository_id: string; directory_name: string; branch: string; container_mode?: ContainerMode }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
+/**
+ * Port mapping for a running container.
+ */
+export type PortMapping = { container_port: string; host_port: string; host_ip: string }
 export type Repo = { id: string; name: string; remote_url: string; default_branch: string; root_path: string; remote: string; display_order: number; config: JsonValue | null; created_at: string; updated_at: string }
 export type Setting = { key: string; value: string; created_at: string; updated_at: string }
 /**
@@ -140,7 +154,7 @@ workspace_path: string;
  */
 pane_pid: number }
 export type UpdateRepoInput = { id: string; name: string | null; default_branch: string | null; display_order: number | null; config: JsonValue | null }
-export type Workspace = { id: string; repository_id: string; directory_name: string; branch: string; state: WorkspaceState; created_at: string; updated_at: string }
+export type Workspace = { id: string; repository_id: string; directory_name: string; branch: string; state: WorkspaceState; container_mode: ContainerMode; container_id: string | null; created_at: string; updated_at: string }
 /**
  * Info about all panes in a workspace's tmux window.
  */

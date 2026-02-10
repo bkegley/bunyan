@@ -14,6 +14,8 @@ import {
   type ClaudeSessionEntry,
   type WorkspacePaneInfo,
   type TmuxPane,
+  type ContainerMode,
+  type PortMapping,
 } from "./bindings";
 import "./App.css";
 
@@ -21,9 +23,16 @@ import "./App.css";
 // Local types for config (JsonValue from bindings is generic)
 // ---------------------------------------------------------------------------
 
+interface ContainerConfig {
+  enabled: boolean;
+  image?: string;
+  dangerously_skip_permissions?: boolean;
+}
+
 interface RepoConfig {
   scripts?: { setup?: string; run?: string };
   runScriptMode?: string;
+  container?: ContainerConfig;
 }
 
 function asConfig(val: JsonValue | null): RepoConfig | null {
@@ -51,6 +60,7 @@ interface AppContextType {
   homePath: string;
   cloningRepo: boolean;
   cloneError: string | null;
+  dockerAvailable: boolean;
 
   setCurrentView: (view: "main" | "addRepo") => void;
   setShowArchived: (show: boolean) => void;
@@ -68,6 +78,7 @@ interface AppContextType {
     repoId: string,
     name: string,
     branch: string,
+    containerMode?: ContainerMode,
   ) => Promise<void>;
   archiveWorkspaceById: (id: string) => Promise<void>;
   openClaude: (workspaceId: string) => Promise<void>;
@@ -224,11 +235,23 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
     config?.scripts?.setup ?? "",
   );
   const [runScript, setRunScript] = useState(config?.scripts?.run ?? "");
+  const [containerEnabled, setContainerEnabled] = useState(
+    config?.container?.enabled ?? false,
+  );
+  const [containerImage, setContainerImage] = useState(
+    config?.container?.image ?? "node:22",
+  );
+  const [skipPermissions, setSkipPermissions] = useState(
+    config?.container?.dangerously_skip_permissions ?? false,
+  );
   const [saving, setSaving] = useState(false);
 
   const hasChanges =
     setupScript !== (config?.scripts?.setup ?? "") ||
-    runScript !== (config?.scripts?.run ?? "");
+    runScript !== (config?.scripts?.run ?? "") ||
+    containerEnabled !== (config?.container?.enabled ?? false) ||
+    containerImage !== (config?.container?.image ?? "node:22") ||
+    skipPermissions !== (config?.container?.dangerously_skip_permissions ?? false);
 
   const handleSave = async () => {
     setSaving(true);
@@ -241,6 +264,11 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
         ...(config?.runScriptMode
           ? { runScriptMode: config.runScriptMode }
           : {}),
+        container: {
+          enabled: containerEnabled,
+          image: containerImage,
+          dangerously_skip_permissions: skipPermissions,
+        },
       };
       await ctx.updateRepoSettings(
         repo.id,
@@ -283,6 +311,43 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
           placeholder="e.g. npm run dev"
         />
       </div>
+      {ctx.dockerAvailable && (
+        <div className="container-settings">
+          <div className="form-group">
+            <label className="container-checkbox">
+              <input
+                type="checkbox"
+                checked={containerEnabled}
+                onChange={(e) => setContainerEnabled(e.target.checked)}
+              />
+              Enable containers
+            </label>
+          </div>
+          {containerEnabled && (
+            <>
+              <div className="form-group">
+                <label>Image</label>
+                <input
+                  type="text"
+                  value={containerImage}
+                  onChange={(e) => setContainerImage(e.target.value)}
+                  placeholder="node:22"
+                />
+              </div>
+              <div className="form-group">
+                <label className="container-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={skipPermissions}
+                    onChange={(e) => setSkipPermissions(e.target.checked)}
+                  />
+                  Skip permissions
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <div className="settings-actions">
         <button
           className="btn btn-primary btn-sm"
@@ -319,7 +384,10 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
   const isOpening = ctx.openingSession.has(workspace.id);
   const isSessionsExpanded = ctx.expandedWorkspaceSessions.has(workspace.id);
   const sessions = ctx.workspaceSessions.get(workspace.id) ?? [];
+  const isContainer = workspace.container_mode === "container";
   const [panesExpanded, setPanesExpanded] = useState(false);
+  const [portsExpanded, setPortsExpanded] = useState(false);
+  const [ports, setPorts] = useState<PortMapping[]>([]);
 
   const handleView = async () => {
     await ctx.viewWorkspace(workspace.id);
@@ -344,10 +412,24 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
     await ctx.archiveWorkspaceById(workspace.id);
   };
 
+  const togglePorts = async () => {
+    const next = !portsExpanded;
+    setPortsExpanded(next);
+    if (next) {
+      try {
+        const result = await commands.getContainerPorts(workspace.id);
+        setPorts(result);
+      } catch {
+        setPorts([]);
+      }
+    }
+  };
+
   return (
     <div className={`workspace-row-container ${isArchived ? "archived" : ""}`}>
       <div className="workspace-row">
         <span className="workspace-name">{workspace.directory_name}</span>
+        {isContainer && <span className="container-badge">container</span>}
         <span className="workspace-branch">{workspace.branch}</span>
         {isArchived ? (
           <span className="archived-badge">archived</span>
@@ -363,6 +445,11 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
                 {claudeCount > 0 && shellCount > 0 && ", "}
                 {shellCount > 0 && `${shellCount} shell`}
                 {claudeCount === 0 && shellCount === 0 && `${panes.length} pane${panes.length !== 1 ? "s" : ""}`}
+              </button>
+            )}
+            {isContainer && !isArchived && (
+              <button className="ports-toggle-btn" onClick={togglePorts}>
+                {portsExpanded ? "\u25be" : "\u25b8"} Ports
               </button>
             )}
             <button
@@ -421,6 +508,22 @@ function WorkspaceRow({ workspace }: { workspace: Workspace }) {
               workspaceId={workspace.id}
             />
           ))}
+        </div>
+      )}
+
+      {portsExpanded && isContainer && !isArchived && (
+        <div className="port-list">
+          {ports.length === 0 ? (
+            <div className="session-empty">No ports forwarded</div>
+          ) : (
+            ports.map((p, i) => (
+              <div key={i} className="port-row">
+                <span>{p.host_ip}:{p.host_port}</span>
+                <span className="port-arrow">{"\u2192"}</span>
+                <span>{p.container_port}</span>
+              </div>
+            ))
+          )}
         </div>
       )}
 
@@ -543,8 +646,11 @@ function SessionList({
 
 function NewWorktreeForm({ repo }: { repo: Repo }) {
   const ctx = useContext(AppContext);
+  const config = asConfig(repo.config);
+  const containerEnabled = config?.container?.enabled ?? false;
   const [name, setName] = useState("");
   const [baseBranch, setBaseBranch] = useState(repo.default_branch);
+  const [useContainer, setUseContainer] = useState(containerEnabled);
   const [error, setError] = useState("");
 
   const validate = (value: string): string => {
@@ -565,7 +671,12 @@ function NewWorktreeForm({ repo }: { repo: Repo }) {
       return;
     }
     ctx.setNewWorktreeRepo(null);
-    await ctx.createNewWorkspace(repo.id, name, name);
+    await ctx.createNewWorkspace(
+      repo.id,
+      name,
+      name,
+      useContainer ? "container" : "local",
+    );
   };
 
   return (
@@ -588,6 +699,16 @@ function NewWorktreeForm({ repo }: { repo: Repo }) {
           placeholder="Base branch"
           style={{ maxWidth: 140 }}
         />
+        {containerEnabled && (
+          <label className="container-checkbox">
+            <input
+              type="checkbox"
+              checked={useContainer}
+              onChange={(e) => setUseContainer(e.target.checked)}
+            />
+            Container
+          </label>
+        )}
       </div>
       {error && <div className="validation-error">{error}</div>}
       <div className="form-actions">
@@ -686,6 +807,7 @@ function App() {
     Map<string, WorkspacePaneInfo>
   >(new Map());
   const [homePath, setHomePath] = useState("");
+  const [dockerAvailable, setDockerAvailable] = useState(false);
 
   // UI state
   const [currentView, setCurrentView] = useState<"main" | "addRepo">("main");
@@ -749,6 +871,7 @@ function App() {
       } catch (e) {
         console.error("Failed to load initial data:", e);
       }
+      commands.checkDockerAvailable().then(setDockerAvailable).catch(() => {});
       pollSessions();
     })();
   }, [pollSessions]);
@@ -835,13 +958,14 @@ function App() {
   }, []);
 
   const handleCreateWorkspace = useCallback(
-    async (repoId: string, name: string, branch: string) => {
+    async (repoId: string, name: string, branch: string, containerMode?: ContainerMode) => {
       setCreatingWorkspace((prev) => new Set([...prev, repoId]));
       try {
         const ws = await commands.createWorkspace({
           repository_id: repoId,
           directory_name: name,
           branch,
+          ...(containerMode ? { container_mode: containerMode } : {}),
         });
         setWorkspaces((prev) => [...prev, ws]);
       } finally {
@@ -997,6 +1121,7 @@ function App() {
     homePath,
     cloningRepo,
     cloneError,
+    dockerAvailable,
     setCurrentView,
     setShowArchived,
     toggleRepo,
