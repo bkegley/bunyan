@@ -20,15 +20,17 @@ pub fn attach_iterm(repo_name: &str, workspace_name: &str) -> Result<()> {
 
     // No existing attachment — open a new iTerm window
     let attach_cmd = tmux::attach_command(repo_name);
+    let session_name = format!("Bunyan: {} / {}", repo_name, workspace_name);
     let script = format!(
         r#"tell application "iTerm"
     activate
     set newWindow to (create window with default profile)
     tell current session of newWindow
+        set name to "{}"
         write text "{}"
     end tell
 end tell"#,
-        attach_cmd
+        session_name, attach_cmd
     );
 
     let output = Command::new("osascript")

@@ -4,11 +4,22 @@ use crate::error::{BunyanError, Result};
 use crate::models::TmuxPane;
 
 const TMUX_SOCKET: &str = "bunyan";
+const TITLE_FORMAT: &str = "Bunyan: #S / #W";
 
 fn tmux_cmd() -> Command {
     let mut cmd = Command::new("tmux");
     cmd.args(["-L", TMUX_SOCKET]);
     cmd
+}
+
+/// Configure tmux to push window titles to the terminal emulator.
+fn configure_titles(repo_name: &str) {
+    let _ = tmux_cmd()
+        .args(["set-option", "-t", repo_name, "set-titles", "on"])
+        .output();
+    let _ = tmux_cmd()
+        .args(["set-option", "-t", repo_name, "set-titles-string", TITLE_FORMAT])
+        .output();
 }
 
 /// Check if a tmux session exists for the given repo.
@@ -60,6 +71,7 @@ pub fn ensure_workspace_window(
                 stderr
             )));
         }
+        configure_titles(repo_name);
         return Ok(());
     }
 
