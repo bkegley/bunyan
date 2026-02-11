@@ -29,8 +29,8 @@ async getWorkspace(id: string) : Promise<Workspace> {
 async createWorkspace(input: CreateWorkspaceInput) : Promise<Workspace> {
     return await TAURI_INVOKE("create_workspace", { input });
 },
-async archiveWorkspace(id: string) : Promise<Workspace> {
-    return await TAURI_INVOKE("archive_workspace", { id });
+async archiveWorkspace(id: string, force: boolean) : Promise<Workspace> {
+    return await TAURI_INVOKE("archive_workspace", { id, force });
 },
 async getSetting(key: string) : Promise<Setting> {
     return await TAURI_INVOKE("get_setting", { key });

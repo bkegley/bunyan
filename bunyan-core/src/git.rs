@@ -5,7 +5,7 @@ use crate::error::{BunyanError, Result};
 pub trait GitOps: Send + Sync {
     fn clone_repo(&self, url: &str, path: &str) -> Result<()>;
     fn worktree_add(&self, repo_path: &str, worktree_path: &str, branch: &str) -> Result<()>;
-    fn worktree_remove(&self, repo_path: &str, worktree_path: &str) -> Result<()>;
+    fn worktree_remove(&self, repo_path: &str, worktree_path: &str, force: bool) -> Result<()>;
     #[allow(dead_code)]
     fn worktree_list(&self, repo_path: &str) -> Result<Vec<String>>;
 }
@@ -45,9 +45,14 @@ impl GitOps for RealGit {
         Ok(())
     }
 
-    fn worktree_remove(&self, repo_path: &str, worktree_path: &str) -> Result<()> {
+    fn worktree_remove(&self, repo_path: &str, worktree_path: &str, force: bool) -> Result<()> {
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(worktree_path);
         let output = Command::new("git")
-            .args(["worktree", "remove", worktree_path])
+            .args(&args)
             .current_dir(repo_path)
             .output()
             .map_err(|e| BunyanError::Git(format!("Failed to run git worktree remove: {}", e)))?;

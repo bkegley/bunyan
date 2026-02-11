@@ -133,7 +133,8 @@ interface AppContextType {
     branch: string,
     containerMode?: ContainerMode,
   ) => Promise<void>;
-  archiveWorkspaceById: (id: string) => Promise<void>;
+  archiveWorkspaceById: (id: string, force?: boolean) => Promise<void>;
+  confirmArchive: (workspace: Workspace) => void;
   openClaude: (workspaceId: string) => Promise<void>;
   openShell: (workspaceId: string) => Promise<void>;
   viewWorkspace: (workspaceId: string) => Promise<void>;
@@ -365,11 +366,7 @@ function DetailPanel() {
           )}
           <button
             className="btn btn-danger btn-sm"
-            onClick={() => {
-              if (window.confirm(`Archive ${workspace.directory_name}? This removes the worktree and kills running sessions.`)) {
-                ctx.archiveWorkspaceById(workspace.id);
-              }
-            }}
+            onClick={() => ctx.confirmArchive(workspace)}
             style={{ marginLeft: "auto" }}
           >
             Archive
@@ -478,6 +475,64 @@ function DetailSessionRow({
 // ---------------------------------------------------------------------------
 // Modals
 // ---------------------------------------------------------------------------
+
+function ConfirmArchiveModal({
+  workspace,
+  onClose,
+  onConfirm,
+}: {
+  workspace: Workspace;
+  onClose: () => void;
+  onConfirm: (id: string, force?: boolean) => Promise<void>;
+}) {
+  const [archiving, setArchiving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const handleArchive = async (force: boolean) => {
+    setArchiving(true);
+    try {
+      await onConfirm(workspace.id, force);
+    } catch (err: unknown) {
+      const msg = String(err);
+      if (!force && (msg.includes("modified or untracked") || msg.includes("--force"))) {
+        setDirty(true);
+        setArchiving(false);
+      } else {
+        console.error("[archive] error:", err);
+        setArchiving(false);
+      }
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Archive Worktree</h2>
+        {dirty ? (
+          <p style={{ fontSize: 13, color: "#c00", marginBottom: 16 }}>
+            <strong>{workspace.directory_name}</strong> has uncommitted changes. Force archive? Changes will be lost.
+          </p>
+        ) : (
+          <p style={{ fontSize: 13, color: "#555", marginBottom: 16 }}>
+            Archive <strong>{workspace.directory_name}</strong>? This removes the worktree and kills running sessions.
+          </p>
+        )}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn btn-sm" onClick={onClose} disabled={archiving}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-danger btn-sm"
+            disabled={archiving}
+            onClick={() => handleArchive(dirty)}
+          >
+            {archiving ? <span className="spinner spinner-sm" /> : dirty ? "Force Archive" : "Archive"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function CreateWorktreeModal({
   repos,
@@ -842,6 +897,7 @@ function App() {
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [cloningRepo, setCloningRepo] = useState(false);
   const [cloneError, setCloneError] = useState<string | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<Workspace | null>(null);
 
   // Loading
   const [openingSession, setOpeningSession] = useState<Set<string>>(new Set());
@@ -1005,10 +1061,11 @@ function App() {
   );
 
   const handleArchiveWorkspace = useCallback(
-    async (id: string) => {
-      const updated = await commands.archiveWorkspace(id);
+    async (id: string, force = false) => {
+      const updated = await commands.archiveWorkspace(id, force);
       setWorkspaces((prev) => prev.map((ws) => (ws.id === updated.id ? updated : ws)));
       if (selectedWorktreeId === id) setSelectedWorktreeId(null);
+      setArchiveTarget(null);
       setTimeout(pollSessions, 500);
     },
     [pollSessions, selectedWorktreeId],
@@ -1155,6 +1212,7 @@ function App() {
     deleteRepoById: handleDeleteRepo,
     createNewWorkspace: handleCreateWorkspace,
     archiveWorkspaceById: handleArchiveWorkspace,
+    confirmArchive: setArchiveTarget,
     openClaude: handleOpenClaude,
     openShell: handleOpenShell,
     viewWorkspace: handleViewWorkspace,
@@ -1221,6 +1279,13 @@ function App() {
           onClone={handleCreateRepo}
           cloningRepo={cloningRepo}
           cloneError={cloneError}
+        />
+      )}
+      {archiveTarget && (
+        <ConfirmArchiveModal
+          workspace={archiveTarget}
+          onClose={() => setArchiveTarget(null)}
+          onConfirm={handleArchiveWorkspace}
         />
       )}
     </AppContext.Provider>

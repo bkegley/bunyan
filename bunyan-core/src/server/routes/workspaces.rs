@@ -111,7 +111,7 @@ pub async fn archive(
 
     tokio::task::spawn_blocking(move || {
         let git = RealGit;
-        git.worktree_remove(&repo_root, &wt_path)
+        git.worktree_remove(&repo_root, &wt_path, true)
     })
     .await
     .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?

@@ -132,6 +132,7 @@ pub async fn create_workspace(
 pub async fn archive_workspace(
     state: State<'_, AppState>,
     id: String,
+    force: bool,
 ) -> Result<Workspace, String> {
     let (workspace, repo) = {
         let conn = state.db.lock().unwrap();
@@ -169,7 +170,7 @@ pub async fn archive_workspace(
 
     tokio::task::spawn_blocking(move || {
         let git = RealGit;
-        git.worktree_remove(&repo_root, &wt_path)
+        git.worktree_remove(&repo_root, &wt_path, force)
     })
     .await
     .map_err(|e| e.to_string())?
