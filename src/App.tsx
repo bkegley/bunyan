@@ -4,6 +4,7 @@ import {
   useCallback,
   createContext,
   useContext,
+  useRef,
 } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import {
@@ -20,7 +21,7 @@ import {
 import "./App.css";
 
 // ---------------------------------------------------------------------------
-// Local types for config (JsonValue from bindings is generic)
+// Types & helpers
 // ---------------------------------------------------------------------------
 
 interface ContainerConfig {
@@ -42,6 +43,67 @@ function asConfig(val: JsonValue | null): RepoConfig | null {
   return null;
 }
 
+function deriveRepoName(url: string): string {
+  const match = url.match(/[/:]([^/:]+?)(?:\.git)?\s*$/);
+  return match ? match[1] : "";
+}
+
+const SHELLS = ["zsh", "bash", "fish", "sh"];
+
+function isShellPane(pane: TmuxPane): boolean {
+  return SHELLS.includes(pane.command);
+}
+
+function relativeTime(dateStr: string | null): string {
+  if (!dateStr) return "";
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  if (diffMs < 0) return "";
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.floor(days / 7);
+  return `${weeks}w`;
+}
+
+type WorktreeStatus = "active" | "shell-only" | "idle" | "archived";
+
+function getWorktreeStatus(
+  workspace: Workspace,
+  paneInfo: WorkspacePaneInfo | undefined,
+): WorktreeStatus {
+  if (workspace.state === "archived") return "archived";
+  if (!paneInfo || paneInfo.panes.length === 0) return "idle";
+  const hasClaude = paneInfo.panes.some((p) => !isShellPane(p));
+  if (hasClaude) return "active";
+  return "shell-only";
+}
+
+function statusDotClass(status: WorktreeStatus): string {
+  switch (status) {
+    case "active":
+      return "status-dot active";
+    case "shell-only":
+      return "status-dot shell-only";
+    case "idle":
+      return "status-dot idle";
+    case "archived":
+      return "status-dot archived-dot";
+  }
+}
+
+function consolidateStatus(statuses: WorktreeStatus[]): WorktreeStatus {
+  if (statuses.includes("active")) return "active";
+  if (statuses.includes("shell-only")) return "shell-only";
+  if (statuses.includes("idle")) return "idle";
+  return "archived";
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -52,27 +114,18 @@ interface AppContextType {
   workspacePanes: Map<string, WorkspacePaneInfo>;
   showArchived: boolean;
   expandedRepos: Set<string>;
-  openSettingsRepo: string | null;
-  newWorktreeRepo: string | null;
-  creatingWorkspace: Set<string>;
-  archivingWorkspace: Set<string>;
+  selectedWorktreeId: string | null;
   openingSession: Set<string>;
   homePath: string;
-  cloningRepo: boolean;
-  cloneError: string | null;
   dockerAvailable: boolean;
+  selectedSessions: ClaudeSessionEntry[];
+  loadingSessions: boolean;
 
-  setCurrentView: (view: "main" | "addRepo") => void;
   setShowArchived: (show: boolean) => void;
   toggleRepo: (id: string) => void;
-  setOpenSettingsRepo: (id: string | null) => void;
-  setNewWorktreeRepo: (id: string | null) => void;
-  setCloneError: (err: string | null) => void;
+  selectWorktree: (id: string) => void;
   createRepo: (name: string, remoteUrl: string) => Promise<void>;
-  updateRepoSettings: (
-    repoId: string,
-    config: JsonValue | null,
-  ) => Promise<void>;
+  updateRepoSettings: (repoId: string, config: JsonValue | null) => Promise<void>;
   deleteRepoById: (id: string) => Promise<void>;
   createNewWorkspace: (
     repoId: string,
@@ -85,165 +138,567 @@ interface AppContextType {
   openShell: (workspaceId: string) => Promise<void>;
   viewWorkspace: (workspaceId: string) => Promise<void>;
   killPane: (workspaceId: string, paneIndex: number) => Promise<void>;
-  expandedWorkspaceSessions: Set<string>;
-  workspaceSessions: Map<string, ClaudeSessionEntry[]>;
-  toggleWorkspaceSessions: (workspaceId: string) => void;
   resumeSession: (workspaceId: string, sessionId: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType>(null!);
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Tree Panel components
 // ---------------------------------------------------------------------------
 
-function deriveRepoName(url: string): string {
-  const match = url.match(/[/:]([^/:]+?)(?:\.git)?\s*$/);
-  return match ? match[1] : "";
-}
-
-const SHELLS = ["zsh", "bash", "fish", "sh"];
-
-function isShellPane(pane: TmuxPane): boolean {
-  return SHELLS.includes(pane.command);
-}
-
-function countClaudePanes(panes: TmuxPane[]): number {
-  return panes.filter((p) => !isShellPane(p)).length;
-}
-
-function countShellPanes(panes: TmuxPane[]): number {
-  return panes.filter((p) => isShellPane(p)).length;
-}
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-function MainView() {
+function TreePanel() {
   const ctx = useContext(AppContext);
 
-  return (
-    <div className="app">
-      <header className="header">
-        <div className="header-title">Bunyan</div>
-        <div className="header-actions">
-          <label>
-            <input
-              type="checkbox"
-              checked={ctx.showArchived}
-              onChange={(e) => ctx.setShowArchived(e.target.checked)}
-            />
-            Show archived
-          </label>
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={() => ctx.setCurrentView("addRepo")}
-          >
-            + Repo
-          </button>
-        </div>
-      </header>
+  const sortedRepos = [...ctx.repos].sort((a, b) => {
+    const aWs = ctx.workspaces.filter((ws) => ws.repository_id === a.id);
+    const bWs = ctx.workspaces.filter((ws) => ws.repository_id === b.id);
+    const aStatuses = aWs.map((ws) => getWorktreeStatus(ws, ctx.workspacePanes.get(ws.id)));
+    const bStatuses = bWs.map((ws) => getWorktreeStatus(ws, ctx.workspacePanes.get(ws.id)));
+    const aConsolidated = consolidateStatus(aStatuses);
+    const bConsolidated = consolidateStatus(bStatuses);
+    const order: Record<WorktreeStatus, number> = { active: 0, "shell-only": 1, idle: 2, archived: 3 };
+    const diff = order[aConsolidated] - order[bConsolidated];
+    if (diff !== 0) return diff;
+    return a.name.localeCompare(b.name);
+  });
 
-      <div className="main-content">
-        {ctx.repos.length === 0 ? (
-          <div className="empty-state">
-            No repositories yet. Click &quot;+ Repo&quot; to add one.
+  return (
+    <div className="tree-panel">
+      <div className="tree-scroll">
+        {sortedRepos.map((repo) => (
+          <RepoNode key={repo.id} repo={repo} />
+        ))}
+        {sortedRepos.length === 0 && (
+          <div style={{ padding: "16px 12px", color: "#999", fontSize: 13 }}>
+            No repos yet
           </div>
-        ) : (
-          ctx.repos.map((repo) => <RepoSection key={repo.id} repo={repo} />)
         )}
+      </div>
+      <div className="tree-footer">
+        <label>
+          <input
+            type="checkbox"
+            checked={ctx.showArchived}
+            onChange={(e) => ctx.setShowArchived(e.target.checked)}
+          />
+          Show archived
+        </label>
       </div>
     </div>
   );
 }
 
-function RepoSection({ repo }: { repo: Repo }) {
+function RepoNode({ repo }: { repo: Repo }) {
   const ctx = useContext(AppContext);
   const isExpanded = ctx.expandedRepos.has(repo.id);
-  const isSettingsOpen = ctx.openSettingsRepo === repo.id;
-  const isNewWorktreeOpen = ctx.newWorktreeRepo === repo.id;
 
-  const repoWorkspaces = ctx.workspaces.filter(
-    (ws) =>
-      ws.repository_id === repo.id &&
-      (ctx.showArchived || ws.state === "ready"),
+  const repoWorkspaces = ctx.workspaces
+    .filter(
+      (ws) =>
+        ws.repository_id === repo.id &&
+        (ctx.showArchived || ws.state !== "archived"),
+    )
+    .sort((a, b) => {
+      const aStatus = getWorktreeStatus(a, ctx.workspacePanes.get(a.id));
+      const bStatus = getWorktreeStatus(b, ctx.workspacePanes.get(b.id));
+      const order: Record<WorktreeStatus, number> = { active: 0, "shell-only": 1, idle: 2, archived: 3 };
+      return order[aStatus] - order[bStatus];
+    });
+
+  const childStatuses = repoWorkspaces.map((ws) =>
+    getWorktreeStatus(ws, ctx.workspacePanes.get(ws.id)),
   );
+  const repoStatus = consolidateStatus(childStatuses);
 
-  const handleGearClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    ctx.setOpenSettingsRepo(isSettingsOpen ? null : repo.id);
-  };
+  const mostRecent = repoWorkspaces.reduce<string | null>((best, ws) => {
+    if (!best || ws.updated_at > best) return ws.updated_at;
+    return best;
+  }, null);
 
   return (
-    <div className="repo-section">
-      <div className="repo-header" onClick={() => ctx.toggleRepo(repo.id)}>
-        <div className="repo-header-left">
-          <span className={`chevron ${isExpanded ? "expanded" : ""}`}>
-            &#9654;
-          </span>
-          <span>{repo.name}</span>
+    <div className="tree-repo">
+      <div className="tree-repo-row" onClick={() => ctx.toggleRepo(repo.id)}>
+        <span className={`tree-chevron ${isExpanded ? "expanded" : ""}`}>&#9654;</span>
+        <span className={statusDotClass(repoStatus)} />
+        <span className="tree-repo-name">{repo.name}</span>
+        <span className="tree-repo-time">{relativeTime(mostRecent)}</span>
+      </div>
+      {isExpanded &&
+        repoWorkspaces.map((ws) => (
+          <WorktreeNode key={ws.id} workspace={ws} repoName={repo.name} />
+        ))}
+    </div>
+  );
+}
+
+function WorktreeNode({ workspace, repoName }: { workspace: Workspace; repoName: string }) {
+  const ctx = useContext(AppContext);
+  const paneInfo = ctx.workspacePanes.get(workspace.id);
+  const status = getWorktreeStatus(workspace, paneInfo);
+  const isSelected = ctx.selectedWorktreeId === workspace.id;
+  const isArchived = workspace.state === "archived";
+
+  return (
+    <div
+      className={`tree-worktree-row ${isSelected ? "selected" : ""} ${isArchived ? "archived" : ""}`}
+      onClick={() => ctx.selectWorktree(workspace.id)}
+      title={`${repoName} / ${workspace.directory_name}`}
+    >
+      <span className={statusDotClass(status)} />
+      <span className="tree-worktree-name">{workspace.directory_name}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Detail Panel components
+// ---------------------------------------------------------------------------
+
+function DetailPanel() {
+  const ctx = useContext(AppContext);
+
+  if (!ctx.selectedWorktreeId) {
+    return (
+      <div className="detail-panel">
+        <div className="detail-empty">
+          <div className="detail-empty-text">Select a worktree to view details</div>
         </div>
-        <button
-          className="gear-btn"
-          onClick={handleGearClick}
-          title="Settings"
-        >
-          &#9881;
-        </button>
+      </div>
+    );
+  }
+
+  const workspace = ctx.workspaces.find((ws) => ws.id === ctx.selectedWorktreeId);
+  if (!workspace) {
+    return (
+      <div className="detail-panel">
+        <div className="detail-empty">
+          <div className="detail-empty-text">Worktree not found</div>
+        </div>
+      </div>
+    );
+  }
+
+  const repo = ctx.repos.find((r) => r.id === workspace.repository_id);
+  const paneInfo = ctx.workspacePanes.get(workspace.id);
+  const panes = paneInfo?.panes ?? [];
+  const isArchived = workspace.state === "archived";
+  const isOpening = ctx.openingSession.has(workspace.id);
+  const isContainer = workspace.container_mode === "container";
+
+  return (
+    <div className="detail-panel">
+      <div className="detail-header">
+        <div className="detail-title">
+          {repo ? `${repo.name} / ` : ""}{workspace.directory_name}
+          {isContainer && <span className="container-badge">container</span>}
+        </div>
+        <div className="detail-branch">{workspace.branch}</div>
       </div>
 
-      {isExpanded && (
-        <div className="repo-content">
-          {isSettingsOpen && <RepoSettingsPanel repo={repo} />}
+      {/* Running panes */}
+      {panes.length > 0 && (
+        <div className="detail-section">
+          <div className="detail-section-title">Running</div>
+          {panes.map((pane) => (
+            <DetailPaneRow
+              key={pane.pane_index}
+              pane={pane}
+              workspaceId={workspace.id}
+            />
+          ))}
+        </div>
+      )}
 
-          <div className="workspace-list">
-            {repoWorkspaces.map((ws) => (
-              <WorkspaceRow key={ws.id} workspace={ws} />
-            ))}
-            {ctx.creatingWorkspace.has(repo.id) && (
-              <div className="workspace-row creating">
-                <span className="workspace-name">Creating...</span>
-                <span className="workspace-branch" />
-                <div className="workspace-actions">
-                  <span className="spinner spinner-sm" />
-                </div>
-              </div>
-            )}
-          </div>
+      {/* Ports (container workspaces only) */}
+      {isContainer && !isArchived && (
+        <PortsSection workspaceId={workspace.id} />
+      )}
 
-          {isNewWorktreeOpen ? (
-            <NewWorktreeForm repo={repo} />
-          ) : (
+      {/* Session history */}
+      <div className="detail-section">
+        <div className="detail-section-title">Sessions</div>
+        {ctx.loadingSessions ? (
+          <div className="session-empty"><span className="spinner spinner-sm" /></div>
+        ) : ctx.selectedSessions.length === 0 ? (
+          <div className="session-empty">No sessions yet</div>
+        ) : (
+          ctx.selectedSessions
+            .filter((s) => (s.message_count ?? 0) > 0)
+            .slice(0, 10)
+            .map((s) => (
+              <DetailSessionRow
+                key={s.session_id}
+                session={s}
+                workspaceId={workspace.id}
+              />
+            ))
+        )}
+      </div>
+
+      {/* Actions */}
+      {!isArchived && (
+        <div className="detail-actions">
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => ctx.openClaude(workspace.id)}
+            disabled={isOpening}
+          >
+            {isOpening ? <span className="spinner spinner-sm" /> : null}
+            Open Claude
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => ctx.openShell(workspace.id)}
+            disabled={isOpening}
+          >
+            Open Shell
+          </button>
+          {panes.length > 0 && (
             <button
-              className="new-worktree-btn"
-              onClick={() => ctx.setNewWorktreeRepo(repo.id)}
+              className="btn btn-sm"
+              onClick={() => ctx.viewWorkspace(workspace.id)}
+              disabled={isOpening}
             >
-              + New Worktree
+              View iTerm
             </button>
           )}
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={() => {
+              if (window.confirm(`Archive ${workspace.directory_name}? This removes the worktree and kills running sessions.`)) {
+                ctx.archiveWorkspaceById(workspace.id);
+              }
+            }}
+            style={{ marginLeft: "auto" }}
+          >
+            Archive
+          </button>
         </div>
       )}
     </div>
   );
 }
 
-function RepoSettingsPanel({ repo }: { repo: Repo }) {
+function PortsSection({ workspaceId }: { workspaceId: string }) {
+  const [ports, setPorts] = useState<PortMapping[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    commands.getContainerPorts(workspaceId)
+      .then((result) => { if (!cancelled) { setPorts(result); setLoaded(true); } })
+      .catch(() => { if (!cancelled) { setPorts([]); setLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+
+  if (!loaded) return null;
+
+  return (
+    <div className="detail-section">
+      <div className="detail-section-title">Ports</div>
+      {ports.length === 0 ? (
+        <div className="session-empty">No ports forwarded</div>
+      ) : (
+        ports.map((p, i) => (
+          <div key={i} className="port-row">
+            <span className="port-host">{p.host_ip}:{p.host_port}</span>
+            <span className="port-arrow">{"\u2192"}</span>
+            <span className="port-container">{p.container_port}</span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function DetailPaneRow({ pane, workspaceId }: { pane: TmuxPane; workspaceId: string }) {
   const ctx = useContext(AppContext);
+  const shell = isShellPane(pane);
+
+  return (
+    <div className="detail-pane-row">
+      <span className={`pane-badge ${shell ? "shell" : "claude"}`}>
+        {shell ? "shell" : "claude"}
+      </span>
+      <span className="detail-pane-info">
+        pid {pane.pane_pid}
+        {pane.is_active && " \u00b7 active"}
+      </span>
+      <div className="detail-pane-actions">
+        <button
+          className="icon-btn"
+          title="View in iTerm"
+          onClick={() => ctx.viewWorkspace(workspaceId)}
+        >
+          &#8599;
+        </button>
+        <button
+          className="icon-btn danger"
+          title="Kill pane"
+          onClick={() => ctx.killPane(workspaceId, pane.pane_index)}
+        >
+          &times;
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DetailSessionRow({
+  session,
+  workspaceId,
+}: {
+  session: ClaudeSessionEntry;
+  workspaceId: string;
+}) {
+  const ctx = useContext(AppContext);
+
+  const snippet = session.first_prompt
+    ? session.first_prompt.length > 80
+      ? session.first_prompt.slice(0, 80) + "\u2026"
+      : session.first_prompt
+    : "(no prompt)";
+
+  return (
+    <div
+      className="detail-session-row"
+      onClick={() => ctx.resumeSession(workspaceId, session.session_id)}
+      title="Resume this session"
+    >
+      <span className="session-prompt">{snippet}</span>
+      <span className="session-meta">
+        {session.message_count ?? 0} msgs
+        {session.modified ? ` \u00b7 ${relativeTime(session.modified)}` : ""}
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Modals
+// ---------------------------------------------------------------------------
+
+function CreateWorktreeModal({
+  repos,
+  onClose,
+  onCreate,
+  workspaces,
+  dockerAvailable,
+}: {
+  repos: Repo[];
+  onClose: () => void;
+  onCreate: (repoId: string, name: string, branch: string, containerMode?: ContainerMode) => Promise<void>;
+  workspaces: Workspace[];
+  dockerAvailable: boolean;
+}) {
+  const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
+  const [name, setName] = useState("");
+  const [useContainer, setUseContainer] = useState(false);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const selectedRepo = repos.find((r) => r.id === repoId);
+  const repoConfig = asConfig(selectedRepo?.config ?? null);
+  const containerEnabled = repoConfig?.container?.enabled ?? false;
+
+  // Reset container checkbox when repo changes
+  useEffect(() => {
+    setUseContainer(containerEnabled);
+  }, [repoId, containerEnabled]);
+
+  const validate = (): string => {
+    if (!name.trim()) return "Name is required";
+    if (/\s/.test(name)) return "No spaces allowed";
+    const existing = workspaces.filter((ws) => ws.repository_id === repoId);
+    if (existing.some((ws) => ws.directory_name === name)) return "Name already exists";
+    return "";
+  };
+
+  const handleCreate = async () => {
+    const err = validate();
+    if (err) { setError(err); return; }
+    setCreating(true);
+    try {
+      await onCreate(repoId, name, name, useContainer ? "container" : "local");
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>New Worktree</h2>
+        <div className="form-group">
+          <label>Repository</label>
+          <select value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+            {repos.map((r) => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label>Worktree name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => { setName(e.target.value); setError(""); }}
+            placeholder="e.g. feature-auth"
+            autoFocus
+          />
+          {error && <div className="validation-error">{error}</div>}
+        </div>
+        {selectedRepo && (
+          <div className="form-group">
+            <label>Base branch</label>
+            <input type="text" value={selectedRepo.default_branch} readOnly />
+          </div>
+        )}
+        {dockerAvailable && containerEnabled && (
+          <div className="form-group">
+            <label className="container-checkbox">
+              <input
+                type="checkbox"
+                checked={useContainer}
+                onChange={(e) => setUseContainer(e.target.checked)}
+              />
+              Run in container
+            </label>
+          </div>
+        )}
+        <div className="form-actions">
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary btn-sm" onClick={handleCreate} disabled={creating}>
+            {creating ? "Creating\u2026" : "Create"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddRepoModal({
+  onClose,
+  onClone,
+  cloningRepo,
+  cloneError,
+}: {
+  onClose: () => void;
+  onClone: (name: string, url: string) => Promise<void>;
+  cloningRepo: boolean;
+  cloneError: string | null;
+}) {
+  const [url, setUrl] = useState("");
+  const derivedName = deriveRepoName(url);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Add Repository</h2>
+        {cloningRepo ? (
+          <div className="clone-loading">
+            <span className="spinner" />
+            <span>Cloning {derivedName}&#8230;</span>
+          </div>
+        ) : (
+          <>
+            <div className="form-group">
+              <label>Remote URL</label>
+              <input
+                type="text"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="git@github.com:org/repo.git"
+                autoFocus
+              />
+            </div>
+            <div className="form-group">
+              <label>Repository name (derived)</label>
+              <input type="text" value={derivedName} readOnly />
+            </div>
+            <div className="form-actions">
+              <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => onClone(derivedName, url)}
+                disabled={!url.trim() || !derivedName}
+              >
+                Clone
+              </button>
+            </div>
+          </>
+        )}
+        {cloneError && <div className="error-message">{cloneError}</div>}
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal({
+  repos,
+  onClose,
+  onUpdateSettings,
+  onDeleteRepo,
+  onAddRepo,
+  dockerAvailable,
+}: {
+  repos: Repo[];
+  onClose: () => void;
+  onUpdateSettings: (repoId: string, config: JsonValue | null) => Promise<void>;
+  onDeleteRepo: (id: string) => Promise<void>;
+  onAddRepo: () => void;
+  dockerAvailable: boolean;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 520 }}>
+        <h2>Settings</h2>
+        <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
+          {repos.map((repo) => (
+            <RepoSettingsItem
+              key={repo.id}
+              repo={repo}
+              onUpdateSettings={onUpdateSettings}
+              onDeleteRepo={onDeleteRepo}
+              dockerAvailable={dockerAvailable}
+            />
+          ))}
+          {repos.length === 0 && (
+            <div style={{ color: "#999", fontSize: 13, padding: "8px 0" }}>
+              No repositories yet.
+            </div>
+          )}
+        </div>
+        <div className="form-actions" style={{ marginTop: 16 }}>
+          <button className="btn btn-sm" onClick={onAddRepo}>+ Add Repo</button>
+          <button className="btn btn-sm" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RepoSettingsItem({
+  repo,
+  onUpdateSettings,
+  onDeleteRepo,
+  dockerAvailable,
+}: {
+  repo: Repo;
+  onUpdateSettings: (repoId: string, config: JsonValue | null) => Promise<void>;
+  onDeleteRepo: (id: string) => Promise<void>;
+  dockerAvailable: boolean;
+}) {
   const config = asConfig(repo.config);
-  const [setupScript, setSetupScript] = useState(
-    config?.scripts?.setup ?? "",
-  );
+  const [setupScript, setSetupScript] = useState(config?.scripts?.setup ?? "");
   const [runScript, setRunScript] = useState(config?.scripts?.run ?? "");
-  const [containerEnabled, setContainerEnabled] = useState(
-    config?.container?.enabled ?? false,
-  );
-  const [containerImage, setContainerImage] = useState(
-    config?.container?.image ?? "node:22",
-  );
-  const [skipPermissions, setSkipPermissions] = useState(
-    config?.container?.dangerously_skip_permissions ?? false,
-  );
+  const [containerEnabled, setContainerEnabled] = useState(config?.container?.enabled ?? false);
+  const [containerImage, setContainerImage] = useState(config?.container?.image ?? "node:22");
+  const [skipPermissions, setSkipPermissions] = useState(config?.container?.dangerously_skip_permissions ?? false);
   const [saving, setSaving] = useState(false);
 
   const hasChanges =
@@ -261,57 +716,49 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
           ...(setupScript ? { setup: setupScript } : {}),
           ...(runScript ? { run: runScript } : {}),
         },
-        ...(config?.runScriptMode
-          ? { runScriptMode: config.runScriptMode }
-          : {}),
+        ...(config?.runScriptMode ? { runScriptMode: config.runScriptMode } : {}),
         container: {
           enabled: containerEnabled,
           image: containerImage,
           dangerously_skip_permissions: skipPermissions,
         },
       };
-      await ctx.updateRepoSettings(
-        repo.id,
-        newConfig as unknown as JsonValue,
-      );
-      ctx.setOpenSettingsRepo(null);
+      await onUpdateSettings(repo.id, newConfig as unknown as JsonValue);
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = async () => {
-    if (
-      !window.confirm(
-        `Delete ${repo.name}? This will remove the repo and all its workspaces from the database.`,
-      )
-    ) {
-      return;
-    }
-    await ctx.deleteRepoById(repo.id);
+    if (!window.confirm(`Delete ${repo.name}? This removes the repo and all its workspaces from the database.`)) return;
+    await onDeleteRepo(repo.id);
   };
 
   return (
-    <div className="settings-panel">
-      <div className="form-group">
-        <label>Setup script</label>
-        <input
-          type="text"
-          value={setupScript}
-          onChange={(e) => setSetupScript(e.target.value)}
-          placeholder="e.g. mise trust && make setup"
-        />
+    <div className="settings-repo-item">
+      <div className="settings-repo-name">{repo.name}</div>
+      <div className="settings-repo-url">{repo.remote_url}</div>
+      <div className="settings-form-row">
+        <div className="form-group">
+          <label>Setup script</label>
+          <input
+            type="text"
+            value={setupScript}
+            onChange={(e) => setSetupScript(e.target.value)}
+            placeholder="e.g. mise trust && make setup"
+          />
+        </div>
+        <div className="form-group">
+          <label>Run script</label>
+          <input
+            type="text"
+            value={runScript}
+            onChange={(e) => setRunScript(e.target.value)}
+            placeholder="e.g. npm run dev"
+          />
+        </div>
       </div>
-      <div className="form-group">
-        <label>Run script</label>
-        <input
-          type="text"
-          value={runScript}
-          onChange={(e) => setRunScript(e.target.value)}
-          placeholder="e.g. npm run dev"
-        />
-      </div>
-      {ctx.dockerAvailable && (
+      {dockerAvailable && (
         <div className="container-settings">
           <div className="form-group">
             <label className="container-checkbox">
@@ -360,498 +807,51 @@ function RepoSettingsPanel({ repo }: { repo: Repo }) {
           )}
         </div>
       )}
-      <div className="settings-actions">
-        <button
-          className="btn btn-primary btn-sm"
-          onClick={handleSave}
-          disabled={!hasChanges || saving}
-        >
-          {saving ? "Saving..." : "Save"}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={!hasChanges || saving}>
+          {saving ? "Saving\u2026" : "Save"}
         </button>
-        <button
-          className="btn btn-sm"
-          onClick={() => ctx.setOpenSettingsRepo(null)}
-        >
-          Cancel
+        <button className="btn btn-sm btn-danger" onClick={handleDelete} style={{ marginLeft: "auto" }}>
+          Delete
         </button>
-      </div>
-      <div className="settings-danger">
-        <button className="btn btn-danger btn-sm" onClick={handleDelete}>
-          Delete repo
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function WorkspaceRow({ workspace }: { workspace: Workspace }) {
-  const ctx = useContext(AppContext);
-  const paneInfo = ctx.workspacePanes.get(workspace.id);
-  const panes = paneInfo?.panes ?? [];
-  const claudeCount = countClaudePanes(panes);
-  const shellCount = countShellPanes(panes);
-  const hasAnyPanes = panes.length > 0;
-  const isArchived = workspace.state === "archived";
-  const isArchiving = ctx.archivingWorkspace.has(workspace.id);
-  const isOpening = ctx.openingSession.has(workspace.id);
-  const isSessionsExpanded = ctx.expandedWorkspaceSessions.has(workspace.id);
-  const sessions = ctx.workspaceSessions.get(workspace.id) ?? [];
-  const isContainer = workspace.container_mode === "container";
-  const [panesExpanded, setPanesExpanded] = useState(false);
-  const [portsExpanded, setPortsExpanded] = useState(false);
-  const [ports, setPorts] = useState<PortMapping[]>([]);
-
-  const handleView = async () => {
-    await ctx.viewWorkspace(workspace.id);
-  };
-
-  const handleClaude = async () => {
-    await ctx.openClaude(workspace.id);
-  };
-
-  const handleShell = async () => {
-    await ctx.openShell(workspace.id);
-  };
-
-  const handleArchive = async () => {
-    if (
-      !window.confirm(
-        `Archive ${workspace.directory_name}? This will remove the worktree and kill any running sessions.`,
-      )
-    ) {
-      return;
-    }
-    await ctx.archiveWorkspaceById(workspace.id);
-  };
-
-  const togglePorts = async () => {
-    const next = !portsExpanded;
-    setPortsExpanded(next);
-    if (next) {
-      try {
-        const result = await commands.getContainerPorts(workspace.id);
-        setPorts(result);
-      } catch {
-        setPorts([]);
-      }
-    }
-  };
-
-  return (
-    <div className={`workspace-row-container ${isArchived ? "archived" : ""}`}>
-      <div className="workspace-row">
-        <span className="workspace-name">{workspace.directory_name}</span>
-        {isContainer && <span className="container-badge">container</span>}
-        <span className="workspace-branch">{workspace.branch}</span>
-        {isArchived ? (
-          <span className="archived-badge">archived</span>
-        ) : (
-          <div className="workspace-actions">
-            {hasAnyPanes && (
-              <button
-                className="panes-toggle-btn"
-                onClick={() => setPanesExpanded(!panesExpanded)}
-              >
-                {panesExpanded ? "\u25be" : "\u25b8"}{" "}
-                {claudeCount > 0 && `${claudeCount} claude`}
-                {claudeCount > 0 && shellCount > 0 && ", "}
-                {shellCount > 0 && `${shellCount} shell`}
-                {claudeCount === 0 && shellCount === 0 && `${panes.length} pane${panes.length !== 1 ? "s" : ""}`}
-              </button>
-            )}
-            {isContainer && !isArchived && (
-              <button className="ports-toggle-btn" onClick={togglePorts}>
-                {portsExpanded ? "\u25be" : "\u25b8"} Ports
-              </button>
-            )}
-            <button
-              className="sessions-toggle-btn"
-              onClick={() => ctx.toggleWorkspaceSessions(workspace.id)}
-            >
-              {isSessionsExpanded ? "\u25be" : "\u25b8"} History
-            </button>
-            {hasAnyPanes && (
-              <button
-                className="shell-btn"
-                onClick={handleView}
-                disabled={isOpening}
-              >
-                View
-              </button>
-            )}
-            <button
-              className="claude-btn"
-              onClick={handleClaude}
-              disabled={isOpening}
-            >
-              {isOpening ? (
-                <span className="spinner spinner-sm" />
-              ) : (
-                <span
-                  className={`claude-dot ${claudeCount > 0 ? "active" : "inactive"}`}
-                />
-              )}
-              Claude
-            </button>
-            <button
-              className="shell-btn"
-              onClick={handleShell}
-              disabled={isOpening}
-            >
-              Shell
-            </button>
-            <button
-              className="archive-btn"
-              onClick={handleArchive}
-              disabled={isArchiving}
-            >
-              {isArchiving ? "..." : "Archive"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {panesExpanded && hasAnyPanes && !isArchived && (
-        <div className="pane-list">
-          {panes.map((pane) => (
-            <PaneRow
-              key={pane.pane_index}
-              pane={pane}
-              workspaceId={workspace.id}
-            />
-          ))}
-        </div>
-      )}
-
-      {portsExpanded && isContainer && !isArchived && (
-        <div className="port-list">
-          {ports.length === 0 ? (
-            <div className="session-empty">No ports forwarded</div>
-          ) : (
-            ports.map((p, i) => (
-              <div key={i} className="port-row">
-                <span>{p.host_ip}:{p.host_port}</span>
-                <span className="port-arrow">{"\u2192"}</span>
-                <span>{p.container_port}</span>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-
-      {isSessionsExpanded && !isArchived && (
-        <SessionList sessions={sessions} workspaceId={workspace.id} />
-      )}
-    </div>
-  );
-}
-
-function PaneRow({
-  pane,
-  workspaceId,
-}: {
-  pane: TmuxPane;
-  workspaceId: string;
-}) {
-  const ctx = useContext(AppContext);
-  const isShell = isShellPane(pane);
-  const isClaude = !isShell;
-
-  const handleKill = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    await ctx.killPane(workspaceId, pane.pane_index);
-  };
-
-  return (
-    <div className="pane-row">
-      <span className={`pane-type ${isClaude ? "pane-claude" : isShell ? "pane-shell" : ""}`}>
-        {isClaude ? "claude" : isShell ? "shell" : pane.command}
-      </span>
-      {pane.is_active && <span className="pane-active-badge">active</span>}
-      <span className="pane-path">{pane.workspace_path}</span>
-      <button className="pane-kill-btn" onClick={handleKill} title="Kill pane">
-        &times;
-      </button>
-    </div>
-  );
-}
-
-function SessionRow({
-  session,
-  workspaceId,
-}: {
-  session: ClaudeSessionEntry;
-  workspaceId: string;
-}) {
-  const ctx = useContext(AppContext);
-
-  const handleResume = async () => {
-    await ctx.resumeSession(workspaceId, session.session_id);
-  };
-
-  const snippet = session.first_prompt
-    ? session.first_prompt.length > 80
-      ? session.first_prompt.slice(0, 80) + "..."
-      : session.first_prompt
-    : "(no prompt)";
-
-  const dateStr = session.created
-    ? new Date(session.created).toLocaleDateString()
-    : "";
-
-  return (
-    <div className="session-row" onClick={handleResume} title="Resume this session">
-      <span className="session-prompt">{snippet}</span>
-      <span className="session-meta">
-        {session.message_count ?? 0} msgs
-        {dateStr && ` \u00b7 ${dateStr}`}
-      </span>
-    </div>
-  );
-}
-
-function SessionList({
-  sessions,
-  workspaceId,
-}: {
-  sessions: ClaudeSessionEntry[];
-  workspaceId: string;
-}) {
-  const realSessions = sessions.filter((s) => (s.message_count ?? 0) > 0);
-  const emptySessions = sessions.filter((s) => (s.message_count ?? 0) === 0);
-  const [emptyExpanded, setEmptyExpanded] = useState(false);
-
-  return (
-    <div className="session-list">
-      {realSessions.length === 0 && emptySessions.length === 0 && (
-        <div className="session-empty">No sessions yet</div>
-      )}
-      {realSessions.map((s) => (
-        <SessionRow
-          key={s.session_id}
-          session={s}
-          workspaceId={workspaceId}
-        />
-      ))}
-      {emptySessions.length > 0 && (
-        <>
-          <button
-            className="empty-sessions-toggle"
-            onClick={() => setEmptyExpanded(!emptyExpanded)}
-          >
-            {emptyExpanded ? "\u25be" : "\u25b8"} {emptySessions.length} empty
-            session{emptySessions.length !== 1 ? "s" : ""}
-          </button>
-          {emptyExpanded &&
-            emptySessions.map((s) => (
-              <SessionRow
-                key={s.session_id}
-                session={s}
-                workspaceId={workspaceId}
-              />
-            ))}
-        </>
-      )}
-    </div>
-  );
-}
-
-function NewWorktreeForm({ repo }: { repo: Repo }) {
-  const ctx = useContext(AppContext);
-  const config = asConfig(repo.config);
-  const containerEnabled = config?.container?.enabled ?? false;
-  const [name, setName] = useState("");
-  const [baseBranch, setBaseBranch] = useState(repo.default_branch);
-  const [useContainer, setUseContainer] = useState(containerEnabled);
-  const [error, setError] = useState("");
-
-  const validate = (value: string): string => {
-    if (!value.trim()) return "Name is required";
-    if (/\s/.test(value)) return "No spaces allowed";
-    const existing = ctx.workspaces.filter(
-      (ws) => ws.repository_id === repo.id,
-    );
-    if (existing.some((ws) => ws.directory_name === value))
-      return "Name already exists";
-    return "";
-  };
-
-  const handleCreate = async () => {
-    const err = validate(name);
-    if (err) {
-      setError(err);
-      return;
-    }
-    ctx.setNewWorktreeRepo(null);
-    await ctx.createNewWorkspace(
-      repo.id,
-      name,
-      name,
-      useContainer ? "container" : "local",
-    );
-  };
-
-  return (
-    <div className="new-worktree-form">
-      <div className="form-row">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => {
-            setName(e.target.value);
-            setError("");
-          }}
-          placeholder="Worktree name"
-          autoFocus
-        />
-        <input
-          type="text"
-          value={baseBranch}
-          onChange={(e) => setBaseBranch(e.target.value)}
-          placeholder="Base branch"
-          style={{ maxWidth: 140 }}
-        />
-        {containerEnabled && (
-          <label className="container-checkbox">
-            <input
-              type="checkbox"
-              checked={useContainer}
-              onChange={(e) => setUseContainer(e.target.checked)}
-            />
-            Container
-          </label>
-        )}
-      </div>
-      {error && <div className="validation-error">{error}</div>}
-      <div className="form-actions">
-        <button className="btn btn-primary btn-sm" onClick={handleCreate}>
-          Create
-        </button>
-        <button
-          className="btn btn-sm"
-          onClick={() => ctx.setNewWorktreeRepo(null)}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function AddRepoView() {
-  const ctx = useContext(AppContext);
-  const [url, setUrl] = useState("");
-  const derivedName = deriveRepoName(url);
-
-  const handleClone = async () => {
-    ctx.setCloneError(null);
-    await ctx.createRepo(derivedName, url);
-  };
-
-  const handleBack = () => {
-    ctx.setCloneError(null);
-    ctx.setCurrentView("main");
-  };
-
-  return (
-    <div className="add-repo-view">
-      <div className="add-repo-header">
-        <button className="back-btn" onClick={handleBack}>
-          &larr; Back
-        </button>
-      </div>
-      <div className="add-repo-content">
-        <h2>Add Repository</h2>
-
-        {ctx.cloningRepo ? (
-          <div className="clone-loading">
-            <span className="spinner" />
-            <span>Cloning {derivedName}...</span>
-          </div>
-        ) : (
-          <>
-            <div className="form-group">
-              <label>Remote URL</label>
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="git@github.com:org/repo.git"
-                autoFocus
-              />
-            </div>
-            <div className="form-group">
-              <label>Repository name (derived from URL)</label>
-              <input type="text" value={derivedName} readOnly />
-            </div>
-            <div className="form-actions">
-              <button className="btn" onClick={handleBack}>
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={handleClone}
-                disabled={!url.trim() || !derivedName}
-              >
-                Clone Repo
-              </button>
-            </div>
-          </>
-        )}
-
-        {ctx.cloneError && (
-          <div className="error-message">{ctx.cloneError}</div>
-        )}
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// App (root)
+// App root
 // ---------------------------------------------------------------------------
 
 function App() {
   // Data
   const [repos, setRepos] = useState<Repo[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [workspacePanes, setWorkspacePanes] = useState<
-    Map<string, WorkspacePaneInfo>
-  >(new Map());
+  const [workspacePanes, setWorkspacePanes] = useState<Map<string, WorkspacePaneInfo>>(new Map());
   const [homePath, setHomePath] = useState("");
   const [dockerAvailable, setDockerAvailable] = useState(false);
 
   // UI state
-  const [currentView, setCurrentView] = useState<"main" | "addRepo">("main");
   const [expandedRepos, setExpandedRepos] = useState<Set<string>>(new Set());
-  const [openSettingsRepo, setOpenSettingsRepo] = useState<string | null>(
-    null,
-  );
   const [showArchived, setShowArchived] = useState(false);
-  const [newWorktreeRepo, setNewWorktreeRepo] = useState<string | null>(null);
+  const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
 
-  // Loading states
+  // Modals
+  const [showNewWorktree, setShowNewWorktree] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showAddRepo, setShowAddRepo] = useState(false);
   const [cloningRepo, setCloningRepo] = useState(false);
   const [cloneError, setCloneError] = useState<string | null>(null);
-  const [creatingWorkspace, setCreatingWorkspace] = useState<Set<string>>(
-    new Set(),
-  );
-  const [archivingWorkspace, setArchivingWorkspace] = useState<Set<string>>(
-    new Set(),
-  );
-  const [openingSession, setOpeningSession] = useState<Set<string>>(
-    new Set(),
-  );
 
-  // Session list state
-  const [expandedWorkspaceSessions, setExpandedWorkspaceSessions] = useState<
-    Set<string>
-  >(new Set());
-  const [workspaceSessions, setWorkspaceSessions] = useState<
-    Map<string, ClaudeSessionEntry[]>
-  >(new Map());
+  // Loading
+  const [openingSession, setOpeningSession] = useState<Set<string>>(new Set());
 
-  // ---- Session polling ----
+  // Sessions for selected worktree
+  const [selectedSessions, setSelectedSessions] = useState<ClaudeSessionEntry[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const prevSelectedRef = useRef<string | null>(null);
+
+  // ---- Polling ----
 
   const pollSessions = useCallback(async () => {
     try {
@@ -862,11 +862,11 @@ function App() {
       }
       setWorkspacePanes(paneMap);
     } catch {
-      // Fail silently
+      // silent
     }
   }, []);
 
-  // ---- Initial data load ----
+  // ---- Initial load ----
 
   useEffect(() => {
     (async () => {
@@ -892,17 +892,10 @@ function App() {
 
   useEffect(() => {
     const interval = setInterval(pollSessions, 5000);
-
-    const handleFocus = () => {
-      pollSessions();
-    };
-    const handleVisibility = () => {
-      if (!document.hidden) pollSessions();
-    };
-
+    const handleFocus = () => pollSessions();
+    const handleVisibility = () => { if (!document.hidden) pollSessions(); };
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibility);
-
     return () => {
       clearInterval(interval);
       window.removeEventListener("focus", handleFocus);
@@ -910,15 +903,38 @@ function App() {
     };
   }, [pollSessions]);
 
-  // ---- Action handlers ----
+  // ---- Load sessions when selection changes ----
+
+  useEffect(() => {
+    if (!selectedWorktreeId) {
+      setSelectedSessions([]);
+      prevSelectedRef.current = null;
+      return;
+    }
+    if (selectedWorktreeId === prevSelectedRef.current) return;
+    prevSelectedRef.current = selectedWorktreeId;
+    setLoadingSessions(true);
+    commands
+      .getWorkspaceSessions(selectedWorktreeId)
+      .then((sessions) => setSelectedSessions(sessions))
+      .catch(() => setSelectedSessions([]))
+      .finally(() => setLoadingSessions(false));
+  }, [selectedWorktreeId]);
+
+  // ---- Actions ----
 
   const toggleRepo = useCallback((id: string) => {
-    setExpandedRepos((prev) => {
+    setExpandedRepos((prev: Set<string>) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+  }, []);
+
+  const selectWorktree = useCallback((id: string) => {
+    setSelectedWorktreeId(id);
+    prevSelectedRef.current = null; // force session reload
   }, []);
 
   const handleCreateRepo = useCallback(
@@ -937,8 +953,8 @@ function App() {
           config: null,
         });
         setRepos((prev) => [...prev, repo]);
-        setExpandedRepos((prev) => new Set([...prev, repo.id]));
-        setCurrentView("main");
+        setExpandedRepos((prev: Set<string>) => new Set([...prev, repo.id]));
+        setShowAddRepo(false);
       } catch (e) {
         setCloneError(String(e));
       } finally {
@@ -955,7 +971,7 @@ function App() {
         name: null,
         default_branch: null,
         display_order: null,
-        config: config,
+        config,
       });
       setRepos((prev) => prev.map((r) => (r.id === repo.id ? repo : r)));
     },
@@ -966,56 +982,45 @@ function App() {
     await commands.deleteRepo(id);
     setRepos((prev) => prev.filter((r) => r.id !== id));
     setWorkspaces((prev) => prev.filter((ws) => ws.repository_id !== id));
-    setOpenSettingsRepo(null);
-  }, []);
+    if (selectedWorktreeId) {
+      const ws = workspaces.find((w) => w.id === selectedWorktreeId);
+      if (ws?.repository_id === id) setSelectedWorktreeId(null);
+    }
+  }, [selectedWorktreeId, workspaces]);
 
   const handleCreateWorkspace = useCallback(
     async (repoId: string, name: string, branch: string, containerMode?: ContainerMode) => {
-      setCreatingWorkspace((prev) => new Set([...prev, repoId]));
-      try {
-        const ws = await commands.createWorkspace({
-          repository_id: repoId,
-          directory_name: name,
-          branch,
-          ...(containerMode ? { container_mode: containerMode } : {}),
-        });
-        setWorkspaces((prev) => [...prev, ws]);
-      } finally {
-        setCreatingWorkspace((prev) => {
-          const next = new Set(prev);
-          next.delete(repoId);
-          return next;
-        });
-      }
+      const ws = await commands.createWorkspace({
+        repository_id: repoId,
+        directory_name: name,
+        branch,
+        ...(containerMode ? { container_mode: containerMode } : {}),
+      });
+      setWorkspaces((prev) => [...prev, ws]);
+      setSelectedWorktreeId(ws.id);
+      prevSelectedRef.current = null;
+      setTimeout(pollSessions, 500);
     },
-    [],
+    [pollSessions],
   );
 
-  const handleArchiveWorkspace = useCallback(async (id: string) => {
-    setArchivingWorkspace((prev) => new Set([...prev, id]));
-    try {
+  const handleArchiveWorkspace = useCallback(
+    async (id: string) => {
       const updated = await commands.archiveWorkspace(id);
-      setWorkspaces((prev) =>
-        prev.map((ws) => (ws.id === updated.id ? updated : ws)),
-      );
-    } finally {
-      setArchivingWorkspace((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-    // Refresh panes since the tmux window was killed
-    setTimeout(pollSessions, 500);
-  }, [pollSessions]);
+      setWorkspaces((prev) => prev.map((ws) => (ws.id === updated.id ? updated : ws)));
+      if (selectedWorktreeId === id) setSelectedWorktreeId(null);
+      setTimeout(pollSessions, 500);
+    },
+    [pollSessions, selectedWorktreeId],
+  );
 
   const handleOpenClaude = useCallback(
     async (workspaceId: string) => {
-      setOpeningSession((prev) => new Set([...prev, workspaceId]));
+      setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
         await commands.openClaudeSession(workspaceId);
       } finally {
-        setOpeningSession((prev) => {
+        setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
           next.delete(workspaceId);
           return next;
@@ -1028,11 +1033,11 @@ function App() {
 
   const handleOpenShell = useCallback(
     async (workspaceId: string) => {
-      setOpeningSession((prev) => new Set([...prev, workspaceId]));
+      setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
         await commands.openShellPane(workspaceId);
       } finally {
-        setOpeningSession((prev) => {
+        setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
           next.delete(workspaceId);
           return next;
@@ -1045,11 +1050,11 @@ function App() {
 
   const handleViewWorkspace = useCallback(
     async (workspaceId: string) => {
-      setOpeningSession((prev) => new Set([...prev, workspaceId]));
+      setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
         await commands.viewWorkspace(workspaceId);
       } finally {
-        setOpeningSession((prev) => {
+        setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
           next.delete(workspaceId);
           return next;
@@ -1071,42 +1076,13 @@ function App() {
     [pollSessions],
   );
 
-  // ---- Session list handlers ----
-
-  const toggleWorkspaceSessions = useCallback(
-    async (workspaceId: string) => {
-      setExpandedWorkspaceSessions((prev) => {
-        const next = new Set(prev);
-        if (next.has(workspaceId)) {
-          next.delete(workspaceId);
-        } else {
-          next.add(workspaceId);
-        }
-        return next;
-      });
-
-      try {
-        const sessions =
-          await commands.getWorkspaceSessions(workspaceId);
-        setWorkspaceSessions((prev) => {
-          const next = new Map(prev);
-          next.set(workspaceId, sessions);
-          return next;
-        });
-      } catch {
-        // Silently fail — show empty list
-      }
-    },
-    [],
-  );
-
   const handleResumeSession = useCallback(
     async (workspaceId: string, sessionId: string) => {
-      setOpeningSession((prev) => new Set([...prev, workspaceId]));
+      setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
         await commands.resumeClaudeSession(workspaceId, sessionId);
       } finally {
-        setOpeningSession((prev) => {
+        setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
           next.delete(workspaceId);
           return next;
@@ -1117,7 +1093,47 @@ function App() {
     [pollSessions],
   );
 
-  // ---- Context value ----
+  // ---- Keyboard navigation ----
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const visibleWorkspaces = workspaces.filter(
+        (ws: Workspace) => showArchived || ws.state !== "archived",
+      );
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (visibleWorkspaces.length === 0) return;
+        const currentIndex = visibleWorkspaces.findIndex((ws: Workspace) => ws.id === selectedWorktreeId);
+        let nextIndex: number;
+        if (e.key === "ArrowDown") {
+          nextIndex = currentIndex < visibleWorkspaces.length - 1 ? currentIndex + 1 : 0;
+        } else {
+          nextIndex = currentIndex > 0 ? currentIndex - 1 : visibleWorkspaces.length - 1;
+        }
+        const nextWs = visibleWorkspaces[nextIndex];
+        setExpandedRepos((prev: Set<string>) => new Set([...prev, nextWs.repository_id]));
+        selectWorktree(nextWs.id);
+      }
+
+      if (e.key === "Enter" && selectedWorktreeId) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleOpenShell(selectedWorktreeId);
+        } else {
+          handleOpenClaude(selectedWorktreeId);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [workspaces, selectedWorktreeId, showArchived, selectWorktree, handleOpenClaude, handleOpenShell]);
+
+  // ---- Context ----
 
   const contextValue: AppContextType = {
     repos,
@@ -1125,21 +1141,15 @@ function App() {
     workspacePanes,
     showArchived,
     expandedRepos,
-    openSettingsRepo,
-    newWorktreeRepo,
-    creatingWorkspace,
-    archivingWorkspace,
+    selectedWorktreeId,
     openingSession,
     homePath,
-    cloningRepo,
-    cloneError,
     dockerAvailable,
-    setCurrentView,
+    selectedSessions,
+    loadingSessions,
     setShowArchived,
     toggleRepo,
-    setOpenSettingsRepo,
-    setNewWorktreeRepo,
-    setCloneError,
+    selectWorktree,
     createRepo: handleCreateRepo,
     updateRepoSettings: handleUpdateRepoSettings,
     deleteRepoById: handleDeleteRepo,
@@ -1149,15 +1159,70 @@ function App() {
     openShell: handleOpenShell,
     viewWorkspace: handleViewWorkspace,
     killPane: handleKillPane,
-    expandedWorkspaceSessions,
-    workspaceSessions,
-    toggleWorkspaceSessions,
     resumeSession: handleResumeSession,
   };
 
   return (
     <AppContext.Provider value={contextValue}>
-      {currentView === "main" ? <MainView /> : <AddRepoView />}
+      <div className="app">
+        {/* Header */}
+        <header className="app-header">
+          <span className="app-header-title">bunyan</span>
+          <div className="app-header-actions">
+            <button
+              className="btn-icon"
+              title="New worktree"
+              onClick={() => setShowNewWorktree(true)}
+              disabled={repos.length === 0}
+            >
+              +
+            </button>
+            <button
+              className="btn-icon"
+              title="Settings"
+              onClick={() => setShowSettings(true)}
+            >
+              &#9881;
+            </button>
+          </div>
+        </header>
+
+        {/* Tree + Detail */}
+        <TreePanel />
+        <DetailPanel />
+      </div>
+
+      {/* Modals */}
+      {showNewWorktree && (
+        <CreateWorktreeModal
+          repos={repos}
+          workspaces={workspaces}
+          onClose={() => setShowNewWorktree(false)}
+          onCreate={handleCreateWorkspace}
+          dockerAvailable={dockerAvailable}
+        />
+      )}
+      {showSettings && (
+        <SettingsModal
+          repos={repos}
+          onClose={() => setShowSettings(false)}
+          onUpdateSettings={handleUpdateRepoSettings}
+          onDeleteRepo={handleDeleteRepo}
+          onAddRepo={() => {
+            setShowSettings(false);
+            setShowAddRepo(true);
+          }}
+          dockerAvailable={dockerAvailable}
+        />
+      )}
+      {showAddRepo && (
+        <AddRepoModal
+          onClose={() => { setShowAddRepo(false); setCloneError(null); }}
+          onClone={handleCreateRepo}
+          cloningRepo={cloningRepo}
+          cloneError={cloneError}
+        />
+      )}
     </AppContext.Provider>
   );
 }
