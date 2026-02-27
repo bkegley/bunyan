@@ -2,17 +2,31 @@ mod commands;
 
 use rusqlite::Connection;
 
-/// macOS GUI apps get a minimal PATH. Resolve the user's shell PATH so we can
-/// find tmux, git, docker, etc.
+/// macOS GUI apps get a minimal PATH. Append common tool directories so we can
+/// find tmux, git, docker, etc. when launched from Finder.
 fn fix_path_env() {
-    if let Ok(output) = std::process::Command::new("/bin/zsh")
-        .args(["-l", "-c", "echo $PATH"])
-        .output()
-    {
-        if let Ok(path) = String::from_utf8(output.stdout) {
-            std::env::set_var("PATH", path.trim());
+    let current = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let extra_dirs = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        &format!("{}/.cargo/bin", home),
+        &format!("{}/.local/bin", home),
+        // mise/asdf shims
+        &format!("{}/.local/share/mise/shims", home),
+        &format!("{}/.asdf/shims", home),
+    ];
+
+    let mut path = current;
+    for dir in extra_dirs {
+        if !dir.is_empty() && std::path::Path::new(dir).exists() && !path.contains(dir) {
+            path = format!("{}:{}", path, dir);
         }
     }
+
+    std::env::set_var("PATH", &path);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
