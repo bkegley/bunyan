@@ -72,7 +72,24 @@ bash .claude/skills/release/scripts/bump-version.sh <bump-type>
 
 If the script fails, consult `references/versioning.md` for the file locations and fix the issue manually.
 
-### Step 6: Commit and Tag
+### Step 6: Build
+
+Build the application to produce distributable binaries:
+
+```bash
+bash .claude/skills/release/scripts/build.sh
+```
+
+This runs `cargo tauri build` and lists all artifacts. The script warns if `TAURI_SIGNING_PRIVATE_KEY` is not set (required for updater signatures).
+
+Expected output artifacts in `src-tauri/target/release/bundle/`:
+- `.dmg` — macOS disk image installer
+- `.app.tar.gz` — compressed app bundle (used by the updater)
+- `.app.tar.gz.sig` — update signature (only if signing key is set)
+
+If the build fails, diagnose and fix the issue before proceeding.
+
+### Step 7: Commit and Tag
 
 1. Update `Cargo.lock` by running `cargo check`, then stage everything:
    ```bash
@@ -87,18 +104,47 @@ If the script fails, consult `references/versioning.md` for the file locations a
    git tag -a v<new-version> -m "v<new-version>"
    ```
 
-### Step 7: Publish GitHub Release
+### Step 8: Generate Update Manifest
 
-Confirm with the user before publishing. Then create the GitHub release:
+Generate `latest.json` for the Tauri updater, passing the new version and the release notes:
 
 ```bash
-gh release create v<new-version> --title "v<new-version>" --notes "$(cat <<'EOF'
-<release notes here>
-EOF
-)"
+bash .claude/skills/release/scripts/generate-update-manifest.sh <new-version> "<release-notes-summary>"
 ```
 
+This creates `latest.json` at the repo root with platform-specific download URLs and signatures.
+
+### Step 9: Publish GitHub Release
+
+Confirm with the user before publishing. Collect all artifacts to attach:
+
+```bash
+# Find artifacts
+DMG=$(find src-tauri/target/release/bundle -name "*.dmg" | head -1)
+TAR_GZ=$(find src-tauri/target/release/bundle -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+SIG=$(find src-tauri/target/release/bundle -name "*.app.tar.gz.sig" | head -1)
+```
+
+Create the release with artifacts attached:
+
+```bash
+gh release create v<new-version> \
+  --title "v<new-version>" \
+  --notes "$(cat <<'EOF'
+<release notes here>
+EOF
+)" \
+  "$DMG" "$TAR_GZ" "$SIG" latest.json
+```
+
+If signature file does not exist, omit `"$SIG"` from the command.
+
 After publishing, print the release URL returned by `gh`.
+
+Clean up the generated `latest.json`:
+```bash
+rm latest.json
+```
 
 Remind the user to push the commit and tag:
 ```bash
@@ -110,6 +156,8 @@ git push && git push --tags
 - If `gh` is not authenticated, instruct the user to run `gh auth login`.
 - If the version bump script fails, read `references/versioning.md` and update files manually.
 - If there are uncommitted changes before starting, warn the user and ask whether to proceed or stash first.
+- If `TAURI_SIGNING_PRIVATE_KEY` is not set, warn that updater signatures won't be generated. The release can still proceed but auto-updates won't work until signing is configured.
+- If `cargo tauri build` fails, check that the frontend builds first (`npm run build`), then retry.
 
 ## Additional Resources
 
@@ -121,3 +169,5 @@ git push && git push --tags
 
 - **`scripts/bump-version.sh`** — bumps version across all project files
 - **`scripts/get-release-context.sh`** — extracts commit history since last tag
+- **`scripts/build.sh`** — runs `cargo tauri build` and lists distributable artifacts
+- **`scripts/generate-update-manifest.sh`** — generates `latest.json` for the Tauri updater
