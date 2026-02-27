@@ -18,6 +18,7 @@ import {
   type ContainerMode,
   type PortMapping,
 } from "./bindings";
+import { checkForUpdates, type Update } from "./updater";
 import "./App.css";
 
 // ---------------------------------------------------------------------------
@@ -708,6 +709,9 @@ function SettingsModal({
   onAddRepo: () => void;
   dockerAvailable: boolean;
 }) {
+  const [checking, setChecking] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 520 }}>
@@ -727,6 +731,28 @@ function SettingsModal({
               No repositories yet.
             </div>
           )}
+        </div>
+        <div style={{ borderTop: "1px solid #333", marginTop: 16, paddingTop: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              className="btn btn-sm"
+              disabled={checking}
+              onClick={async () => {
+                setChecking(true);
+                setUpdateStatus(null);
+                const update = await checkForUpdates();
+                setChecking(false);
+                setUpdateStatus(
+                  update ? `v${update.version} available` : "Up to date"
+                );
+              }}
+            >
+              {checking ? "Checking..." : "Check for updates"}
+            </button>
+            {updateStatus && (
+              <span style={{ fontSize: 12, color: "#999" }}>{updateStatus}</span>
+            )}
+          </div>
         </div>
         <div className="form-actions" style={{ marginTop: 16 }}>
           <button className="btn btn-sm" onClick={onAddRepo}>+ Add Repo</button>
@@ -899,6 +925,11 @@ function App() {
   const [cloneError, setCloneError] = useState<string | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<Workspace | null>(null);
 
+  // Updater
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [installing, setInstalling] = useState(false);
+
   // Loading
   const [openingSession, setOpeningSession] = useState<Set<string>>(new Set());
 
@@ -941,6 +972,7 @@ function App() {
       }
       commands.checkDockerAvailable().then(setDockerAvailable).catch(() => {});
       pollSessions();
+      checkForUpdates().then(setAvailableUpdate);
     })();
   }, [pollSessions]);
 
@@ -1244,6 +1276,35 @@ function App() {
             </button>
           </div>
         </header>
+
+        {/* Update banner */}
+        {availableUpdate && !updateDismissed && (
+          <div className="update-banner">
+            <span>v{availableUpdate.version} available</span>
+            <button
+              className="btn btn-sm"
+              disabled={installing}
+              onClick={async () => {
+                setInstalling(true);
+                try {
+                  await availableUpdate.downloadAndInstall();
+                } catch (e) {
+                  console.error("Update failed:", e);
+                  setInstalling(false);
+                }
+              }}
+            >
+              {installing ? "Installing..." : "Update"}
+            </button>
+            <button
+              className="btn-icon"
+              title="Dismiss"
+              onClick={() => setUpdateDismissed(true)}
+            >
+              &times;
+            </button>
+          </div>
+        )}
 
         {/* Tree + Detail */}
         <TreePanel />
