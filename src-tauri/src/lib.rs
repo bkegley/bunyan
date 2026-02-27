@@ -2,8 +2,23 @@ mod commands;
 
 use rusqlite::Connection;
 
+/// macOS GUI apps get a minimal PATH. Resolve the user's shell PATH so we can
+/// find tmux, git, docker, etc.
+fn fix_path_env() {
+    if let Ok(output) = std::process::Command::new("/bin/zsh")
+        .args(["-l", "-c", "echo $PATH"])
+        .output()
+    {
+        if let Ok(path) = String::from_utf8(output.stdout) {
+            std::env::set_var("PATH", path.trim());
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    fix_path_env();
+
     let db_path = bunyan_core::get_db_path();
     let conn = Connection::open(&db_path).expect("Failed to open database");
 
