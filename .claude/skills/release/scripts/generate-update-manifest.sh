@@ -4,7 +4,7 @@ set -euo pipefail
 VERSION="${1:?Usage: generate-update-manifest.sh <version> <notes>}"
 NOTES="${2:-}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-BUNDLE_DIR="$REPO_ROOT/src-tauri/target/release/bundle"
+BUNDLE_DIR="$REPO_ROOT/target/release/bundle"
 REPO_SLUG="bkegley/bunyan"
 
 # Find the .tar.gz (updater artifact) and its signature

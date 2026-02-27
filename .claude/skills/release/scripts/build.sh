@@ -14,7 +14,7 @@ cd "$REPO_ROOT"
 npx tauri build 2>&1
 
 # Find and list artifacts
-BUNDLE_DIR="$REPO_ROOT/src-tauri/target/release/bundle"
+BUNDLE_DIR="$REPO_ROOT/target/release/bundle"
 
 echo ""
 echo "=== Build Artifacts ==="

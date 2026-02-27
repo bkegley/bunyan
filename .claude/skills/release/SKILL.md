@@ -82,7 +82,7 @@ bash .claude/skills/release/scripts/build.sh
 
 This runs `cargo tauri build` and lists all artifacts. The script warns if `TAURI_SIGNING_PRIVATE_KEY` is not set (required for updater signatures).
 
-Expected output artifacts in `src-tauri/target/release/bundle/`:
+Expected output artifacts in `target/release/bundle/`:
 - `.dmg` — macOS disk image installer
 - `.app.tar.gz` — compressed app bundle (used by the updater)
 - `.app.tar.gz.sig` — update signature (only if signing key is set)
@@ -120,9 +120,9 @@ Confirm with the user before publishing. Collect all artifacts to attach:
 
 ```bash
 # Find artifacts
-DMG=$(find src-tauri/target/release/bundle -name "*.dmg" | head -1)
-TAR_GZ=$(find src-tauri/target/release/bundle -name "*.app.tar.gz" ! -name "*.sig" | head -1)
-SIG=$(find src-tauri/target/release/bundle -name "*.app.tar.gz.sig" | head -1)
+DMG=$(find target/release/bundle -name "*.dmg" | head -1)
+TAR_GZ=$(find target/release/bundle -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+SIG=$(find target/release/bundle -name "*.app.tar.gz.sig" | head -1)
 ```
 
 Create the release with artifacts attached:
