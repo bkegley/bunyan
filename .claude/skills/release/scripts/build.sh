@@ -11,7 +11,7 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
 fi
 
 cd "$REPO_ROOT"
-cargo tauri build 2>&1
+npx tauri build 2>&1
 
 # Find and list artifacts
 BUNDLE_DIR="$REPO_ROOT/src-tauri/target/release/bundle"
