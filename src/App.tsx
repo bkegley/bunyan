@@ -51,6 +51,15 @@ function deriveRepoName(url: string): string {
 
 const SHELLS = ["zsh", "bash", "fish", "sh"];
 
+const EDITOR_DISPLAY_NAMES: Record<string, string> = {
+  iterm: "iTerm",
+  vscode: "VS Code",
+  cursor: "Cursor",
+  zed: "Zed",
+  windsurf: "Windsurf",
+  antigravity: "Antigravity",
+};
+
 function isShellPane(pane: TmuxPane): boolean {
   return SHELLS.includes(pane.command);
 }
@@ -139,8 +148,11 @@ interface AppContextType {
   openClaude: (workspaceId: string) => Promise<void>;
   openShell: (workspaceId: string) => Promise<void>;
   viewWorkspace: (workspaceId: string) => Promise<void>;
+  openInEditor: (workspaceId: string, editorId?: string) => Promise<void>;
   killPane: (workspaceId: string, paneIndex: number) => Promise<void>;
   resumeSession: (workspaceId: string, sessionId: string) => Promise<void>;
+  detectedEditors: string[];
+  preferredEditor: string;
 }
 
 const AppContext = createContext<AppContextType>(null!);
@@ -249,6 +261,67 @@ function WorktreeNode({ workspace, repoName }: { workspace: Workspace; repoName:
     >
       <span className={statusDotClass(status)} />
       <span className="tree-worktree-name">{workspace.directory_name}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Editor split button
+// ---------------------------------------------------------------------------
+
+function EditorSplitButton({ workspaceId, disabled }: { workspaceId: string; disabled: boolean }) {
+  const ctx = useContext(AppContext);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  const editorName = EDITOR_DISPLAY_NAMES[ctx.preferredEditor] ?? ctx.preferredEditor;
+  const otherEditors = ctx.detectedEditors.filter((e) => e !== ctx.preferredEditor);
+
+  return (
+    <div className="split-btn-group" ref={ref}>
+      <button
+        className="btn btn-sm"
+        onClick={() => ctx.openInEditor(workspaceId)}
+        disabled={disabled}
+      >
+        Open in {editorName}
+      </button>
+      {otherEditors.length > 0 && (
+        <>
+          <button
+            className="btn btn-sm split-btn-toggle"
+            onClick={() => setOpen((p) => !p)}
+            disabled={disabled}
+          >
+            &#9662;
+          </button>
+          {open && (
+            <div className="split-btn-menu">
+              {otherEditors.map((editorId) => (
+                <button
+                  key={editorId}
+                  className="split-btn-menu-item"
+                  onClick={() => {
+                    setOpen(false);
+                    ctx.openInEditor(workspaceId, editorId);
+                  }}
+                >
+                  {EDITOR_DISPLAY_NAMES[editorId] ?? editorId}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -365,6 +438,7 @@ function DetailPanel() {
               View iTerm
             </button>
           )}
+          <EditorSplitButton workspaceId={workspace.id} disabled={isOpening} />
           <button
             className="btn btn-danger btn-sm"
             onClick={() => ctx.confirmArchive(workspace)}
@@ -701,6 +775,9 @@ function SettingsModal({
   onDeleteRepo,
   onAddRepo,
   dockerAvailable,
+  detectedEditors,
+  preferredEditor,
+  onSetPreferredEditor,
 }: {
   repos: Repo[];
   onClose: () => void;
@@ -708,6 +785,9 @@ function SettingsModal({
   onDeleteRepo: (id: string) => Promise<void>;
   onAddRepo: () => void;
   dockerAvailable: boolean;
+  detectedEditors: string[];
+  preferredEditor: string;
+  onSetPreferredEditor: (editorId: string) => Promise<void>;
 }) {
   const [checking, setChecking] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
@@ -717,6 +797,21 @@ function SettingsModal({
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 520 }}>
         <h2>Settings</h2>
         <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
+          <div className="settings-section">
+            <div className="form-group">
+              <label>Preferred editor</label>
+              <select
+                value={preferredEditor}
+                onChange={(e) => onSetPreferredEditor(e.target.value)}
+              >
+                {detectedEditors.map((editorId) => (
+                  <option key={editorId} value={editorId}>
+                    {EDITOR_DISPLAY_NAMES[editorId] ?? editorId}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           {repos.map((repo) => (
             <RepoSettingsItem
               key={repo.id}
@@ -937,6 +1032,8 @@ function App() {
   const [selectedSessions, setSelectedSessions] = useState<ClaudeSessionEntry[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const prevSelectedRef = useRef<string | null>(null);
+  const [detectedEditors, setDetectedEditors] = useState<string[]>(["iterm"]);
+  const [preferredEditor, setPreferredEditor] = useState("iterm");
 
   // ---- Polling ----
 
@@ -971,6 +1068,10 @@ function App() {
         console.error("Failed to load initial data:", e);
       }
       commands.checkDockerAvailable().then(setDockerAvailable).catch(() => {});
+      commands.detectEditors().then(setDetectedEditors).catch(() => {});
+      commands.getSetting("preferred_editor")
+        .then((s) => setPreferredEditor(s.value))
+        .catch(() => {});
       pollSessions();
       checkForUpdates().then(setAvailableUpdate);
     })();
@@ -1154,6 +1255,36 @@ function App() {
     [pollSessions],
   );
 
+  const handleOpenInEditor = useCallback(
+    async (workspaceId: string, editorId?: string) => {
+      const editor = editorId ?? preferredEditor;
+      setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
+      try {
+        await commands.openInEditor(workspaceId, editor);
+      } finally {
+        setOpeningSession((prev: Set<string>) => {
+          const next = new Set(prev);
+          next.delete(workspaceId);
+          return next;
+        });
+        setTimeout(pollSessions, 1000);
+      }
+    },
+    [pollSessions, preferredEditor],
+  );
+
+  const handleSetPreferredEditor = useCallback(
+    async (editorId: string) => {
+      setPreferredEditor(editorId);
+      try {
+        await commands.setSetting("preferred_editor", editorId);
+      } catch {
+        // silent
+      }
+    },
+    [],
+  );
+
   const handleKillPane = useCallback(
     async (workspaceId: string, paneIndex: number) => {
       try {
@@ -1248,7 +1379,10 @@ function App() {
     openClaude: handleOpenClaude,
     openShell: handleOpenShell,
     viewWorkspace: handleViewWorkspace,
+    openInEditor: handleOpenInEditor,
     killPane: handleKillPane,
+    detectedEditors,
+    preferredEditor,
     resumeSession: handleResumeSession,
   };
 
@@ -1332,6 +1466,9 @@ function App() {
             setShowAddRepo(true);
           }}
           dockerAvailable={dockerAvailable}
+          detectedEditors={detectedEditors}
+          preferredEditor={preferredEditor}
+          onSetPreferredEditor={handleSetPreferredEditor}
         />
       )}
       {showAddRepo && (

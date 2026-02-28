@@ -62,6 +62,8 @@ pub fn run() {
             commands::claude::open_shell_pane,
             commands::claude::view_workspace,
             commands::claude::kill_pane,
+            commands::claude::detect_editors,
+            commands::claude::open_in_editor,
             commands::docker::check_docker_available,
             commands::docker::get_container_status,
             commands::docker::get_container_ports,
