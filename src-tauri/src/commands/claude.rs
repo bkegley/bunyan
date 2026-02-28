@@ -3,6 +3,7 @@ use tauri::State;
 
 use bunyan_core::db;
 use bunyan_core::docker;
+use bunyan_core::editor;
 use bunyan_core::models::{ClaudeSessionEntry, ContainerConfig, ContainerMode, TmuxPane, WorkspacePaneInfo};
 use bunyan_core::state::AppState;
 use bunyan_core::terminal;
@@ -679,4 +680,66 @@ pub async fn kill_pane(
 /// Kill the entire tmux window for a workspace (used before archiving).
 pub fn kill_workspace_window(repo_name: &str, workspace_name: &str) {
     let _ = tmux::kill_window(repo_name, workspace_name);
+}
+
+/// Detect which editors/IDEs are installed on the system.
+#[tauri::command]
+#[specta::specta]
+pub async fn detect_editors() -> Result<Vec<String>, String> {
+    let editors = tokio::task::spawn_blocking(|| editor::detect_installed_editors())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(editors.iter().map(|e| e.id().to_string()).collect())
+}
+
+/// Open a workspace folder in a specific editor/IDE.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_in_editor(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    editor_id: String,
+) -> Result<String, String> {
+    let ed = editor::Editor::from_id(&editor_id)
+        .ok_or_else(|| format!("Unknown editor: {}", editor_id))?;
+
+    let (workspace, repo, ws_path_str) = {
+        let conn = state.db.lock().unwrap();
+        resolve_workspace_path(&conn, &workspace_id)?
+    };
+
+    // For iTerm, use the existing tmux+iTerm flow
+    if ed == editor::Editor::Iterm {
+        let repo_name = repo.name.clone();
+        let ws_name = workspace.directory_name.clone();
+        let ws_path = ws_path_str.clone();
+
+        tokio::task::spawn_blocking(move || {
+            tmux::ensure_workspace_window(&repo_name, &ws_name, &ws_path)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        let repo_name_attach = repo.name.clone();
+        let ws_name_attach = workspace.directory_name.clone();
+        tokio::task::spawn_blocking(move || {
+            terminal::attach_iterm(&repo_name_attach, &ws_name_attach)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        return Ok("attached".to_string());
+    }
+
+    // For other editors, open the workspace folder
+    let path = ws_path_str.clone();
+    tokio::task::spawn_blocking(move || editor::open_in_editor(&ed, &path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+    Ok("opened".to_string())
 }

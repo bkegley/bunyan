@@ -102,6 +102,18 @@ async getContainerStatus(workspaceId: string) : Promise<string> {
 },
 async getContainerPorts(workspaceId: string) : Promise<PortMapping[]> {
     return await TAURI_INVOKE("get_container_ports", { workspaceId });
+},
+/**
+ * Detect which editors/IDEs are installed on the system.
+ */
+async detectEditors() : Promise<string[]> {
+    return await TAURI_INVOKE("detect_editors");
+},
+/**
+ * Open a workspace folder in a specific editor/IDE.
+ */
+async openInEditor(workspaceId: string, editorId: string) : Promise<string> {
+    return await TAURI_INVOKE("open_in_editor", { workspaceId, editorId });
 }
 }
 

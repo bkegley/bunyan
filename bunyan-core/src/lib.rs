@@ -5,6 +5,7 @@ pub mod db;
 pub mod git;
 pub mod tmux;
 pub mod terminal;
+pub mod editor;
 pub mod docker;
 pub mod workspace;
 pub mod sessions;
