@@ -7,6 +7,16 @@ description: Manage git worktrees, Claude sessions, and Docker containers via th
 
 Bunyan manages git worktrees, Claude Code sessions, tmux panes, and Docker containers. Use it to spin up isolated workspaces for side-fixes, manage multiple Claude sessions, and orchestrate container-based development.
 
+## Installation
+
+If `bunyan` is not on the user's PATH (`command -v bunyan` fails), install it before attempting anything else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bkegley/bunyan/main/install.sh | bash
+```
+
+The installer drops the binary into `$HOME/.local/bin` by default. If that directory isn't on PATH, the installer prints the `export PATH=...` line to add. For non-macOS-ARM platforms it falls back to a source install hint (`cargo install --git https://github.com/bkegley/bunyan bunyan-cli`).
+
 ## Prerequisites
 
 Before any operation, verify the server is running:
