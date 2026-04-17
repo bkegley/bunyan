@@ -7,8 +7,8 @@ A development environment manager for macOS that orchestrates Git worktrees, tmu
 The recommended way to use Bunyan is via the CLI. The desktop GUI is optional and documented further down.
 
 ```sh
-# Install the CLI (builds from source into ~/.cargo/bin)
-cargo install --path bunyan-cli
+# Install the CLI (macOS Apple Silicon prebuilt binary)
+curl -fsSL https://raw.githubusercontent.com/bkegley/bunyan/main/install.sh | bash
 
 # Start the background daemon
 bunyan up
@@ -17,6 +17,8 @@ bunyan up
 bunyan repo create --name myrepo --remote-url git@github.com:you/myrepo.git --root-path ~/bunyan/repos/myrepo
 bunyan workspace create --repo <repo-id> --name feature-x --branch feature-x
 ```
+
+The installer drops the binary into `$HOME/.local/bin` (or `$BUNYAN_INSTALL_DIR` / `$XDG_BIN_DIR` if set). Other platforms can build from source with `cargo install --git https://github.com/bkegley/bunyan bunyan-cli`.
 
 `bunyan --help` lists every subcommand. Stop the daemon with `bunyan down`.
 

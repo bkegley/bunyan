@@ -13,6 +13,22 @@ fi
 cd "$REPO_ROOT"
 npx tauri build 2>&1
 
+cargo build --release -p bunyan-cli
+
+# Rename the CLI binary to include OS/arch so releases can ship multi-platform
+# assets from CI in the future. Normalize arm64 -> aarch64 to match the Tauri
+# bundle naming convention.
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$ARCH" in
+  arm64) ARCH=aarch64 ;;
+  x86_64) ARCH=x86_64 ;;
+esac
+
+CLI_SRC="$REPO_ROOT/target/release/bunyan"
+CLI_DIST="$REPO_ROOT/target/release/bunyan-${OS}-${ARCH}"
+cp "$CLI_SRC" "$CLI_DIST"
+
 # Find and list artifacts
 BUNDLE_DIR="$REPO_ROOT/target/release/bundle"
 
@@ -28,3 +44,5 @@ for ext in dmg app.tar.gz app.tar.gz.sig; do
     done <<< "$found"
   fi
 done
+
+echo "$CLI_DIST"

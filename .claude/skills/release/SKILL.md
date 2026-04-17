@@ -82,10 +82,11 @@ bash .claude/skills/release/scripts/build.sh
 
 This runs `cargo tauri build` and lists all artifacts. The script warns if `TAURI_SIGNING_PRIVATE_KEY` is not set (required for updater signatures).
 
-Expected output artifacts in `target/release/bundle/`:
-- `.dmg` — macOS disk image installer
-- `.app.tar.gz` — compressed app bundle (used by the updater)
-- `.app.tar.gz.sig` — update signature (only if signing key is set)
+Expected output artifacts:
+- `target/release/bundle/dmg/*.dmg` — macOS disk image installer
+- `target/release/bundle/macos/*.app.tar.gz` — compressed app bundle (used by the updater)
+- `target/release/bundle/macos/*.app.tar.gz.sig` — update signature (only if signing key is set)
+- `target/release/bunyan-<os>-<arch>` — standalone CLI binary for the curl-based installer
 
 If the build fails, diagnose and fix the issue before proceeding.
 
@@ -123,6 +124,7 @@ Confirm with the user before publishing. Collect all artifacts to attach:
 DMG=$(find target/release/bundle -name "*.dmg" | head -1)
 TAR_GZ=$(find target/release/bundle -name "*.app.tar.gz" ! -name "*.sig" | head -1)
 SIG=$(find target/release/bundle -name "*.app.tar.gz.sig" | head -1)
+CLI=$(ls target/release/bunyan-*-* | head -1)
 ```
 
 Create the release with artifacts attached:
@@ -134,7 +136,7 @@ gh release create v<new-version> \
 <release notes here>
 EOF
 )" \
-  "$DMG" "$TAR_GZ" "$SIG" latest.json
+  "$DMG" "$TAR_GZ" "$SIG" "$CLI" latest.json
 ```
 
 If signature file does not exist, omit `"$SIG"` from the command.
