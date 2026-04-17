@@ -2,6 +2,24 @@
 
 A development environment manager for macOS that orchestrates Git worktrees, tmux sessions, Docker containers, and Claude Code from a desktop app or CLI. Built with Tauri (Rust) and React (TypeScript).
 
+## Quick Start
+
+The recommended way to use Bunyan is via the CLI. The desktop GUI is optional and documented further down.
+
+```sh
+# Install the CLI (builds from source into ~/.cargo/bin)
+cargo install --path bunyan-cli
+
+# Start the background daemon
+bunyan up
+
+# Register a repo and create a worktree
+bunyan repo create --name myrepo --remote-url git@github.com:you/myrepo.git --root-path ~/bunyan/repos/myrepo
+bunyan workspace create --repo <repo-id> --name feature-x --branch feature-x
+```
+
+`bunyan --help` lists every subcommand. Stop the daemon with `bunyan down`.
+
 ## Features
 
 - **Worktree-based workflows** — Each task gets its own Git worktree with an isolated branch, dependencies, and state. No more stashing or context-switching.
@@ -41,14 +59,16 @@ The repo is a Cargo workspace with three crates and a React frontend:
 
 ```
 bunyan-core/       Shared Rust library (models, db, tmux, git, docker, HTTP server)
-bunyan-cli/        CLI binary — talks to the HTTP server
-src-tauri/         Tauri desktop app — wraps bunyan-core, serves the React frontend
+bunyan-cli/        CLI binary — runs the daemon and talks to the HTTP server
+src-tauri/         Tauri desktop app — launches the bunyan daemon and serves the React frontend
 src/               React frontend (single-page app, Vite + TypeScript)
 ```
 
 ### Running Locally
 
 **Desktop app (GUI + server):**
+
+The Tauri shell spawns the `bunyan` CLI to run the daemon, so make sure it's installed and on PATH first (see Quick Start).
 
 ```sh
 npm install
@@ -63,7 +83,7 @@ This starts the Vite dev server and the Tauri app simultaneously. The Rust backe
 cargo build -p bunyan-cli
 ```
 
-The CLI requires a running server. You can either start the desktop app or run the server headlessly with `bunyan serve`.
+The CLI requires a running server. Use `bunyan up` to start the daemon in the background (or `bunyan serve` to run it in the foreground). `bunyan down` stops the daemon.
 
 ### Production Build
 
@@ -72,10 +92,3 @@ npx tauri build
 ```
 
 Outputs a `.dmg` and `.app` bundle in `src-tauri/target/release/bundle/`.
-
-### Data Locations
-
-- **SQLite DB**: `~/Library/Application Support/com.bunyan.app/bunyan.db`
-- **Repos**: `~/bunyan/repos/<name>/`
-- **Worktrees**: `~/bunyan/workspaces/<repo>/<worktree>/`
-- **Server port file**: `~/.bunyan/server.port`
