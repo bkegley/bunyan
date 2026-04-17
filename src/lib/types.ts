@@ -1,11 +1,10 @@
 import type {
   Repo,
   Workspace,
-  JsonValue,
   ClaudeSessionEntry,
   WorkspacePaneInfo,
   ContainerMode,
-} from "@/bindings";
+} from "@/api";
 
 export interface ContainerConfig {
   enabled: boolean;
@@ -38,7 +37,7 @@ export interface AppContextType {
   toggleRepo: (id: string) => void;
   selectWorktree: (id: string) => void;
   createRepo: (name: string, remoteUrl: string) => Promise<void>;
-  updateRepoSettings: (repoId: string, config: JsonValue | null) => Promise<void>;
+  updateRepoSettings: (repoId: string, config: unknown | null) => Promise<void>;
   deleteRepoById: (id: string) => Promise<void>;
   createNewWorkspace: (
     repoId: string,

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { Repo, Workspace, ContainerMode } from "@/bindings";
+import type { Repo, Workspace, ContainerMode } from "@/api";
 import { asConfig } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

@@ -1,5 +1,5 @@
 import { useContext } from "react";
-import type { Repo, Workspace } from "@/bindings";
+import type { Repo, Workspace } from "@/api";
 import { AppContext } from "@/lib/context";
 import type { WorktreeStatus } from "@/lib/types";
 import { getWorktreeStatus, consolidateStatus, relativeTime } from "@/lib/helpers";

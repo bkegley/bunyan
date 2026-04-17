@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Repo, JsonValue } from "@/bindings";
+import type { Repo } from "@/api";
 import { EDITOR_DISPLAY_NAMES, asConfig } from "@/lib/helpers";
 import type { RepoConfig } from "@/lib/types";
 import { checkForUpdates } from "@/updater";
@@ -38,7 +38,7 @@ export function SettingsModal({
 }: {
   repos: Repo[];
   onClose: () => void;
-  onUpdateSettings: (repoId: string, config: JsonValue | null) => Promise<void>;
+  onUpdateSettings: (repoId: string, config: unknown | null) => Promise<void>;
   onDeleteRepo: (id: string) => Promise<void>;
   onAddRepo: () => void;
   dockerAvailable: boolean;
@@ -127,7 +127,7 @@ function RepoSettingsItem({
   dockerAvailable,
 }: {
   repo: Repo;
-  onUpdateSettings: (repoId: string, config: JsonValue | null) => Promise<void>;
+  onUpdateSettings: (repoId: string, config: unknown | null) => Promise<void>;
   onDeleteRepo: (id: string) => Promise<void>;
   dockerAvailable: boolean;
 }) {
@@ -163,7 +163,7 @@ function RepoSettingsItem({
           dangerously_skip_permissions: skipPermissions,
         },
       };
-      await onUpdateSettings(repo.id, newConfig as unknown as JsonValue);
+      await onUpdateSettings(repo.id, newConfig as unknown as unknown);
     } finally {
       setSaving(false);
     }

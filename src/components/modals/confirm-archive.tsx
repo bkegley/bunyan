@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Workspace } from "@/bindings";
+import type { Workspace } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

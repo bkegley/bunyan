@@ -1,6 +1,6 @@
 import { useContext, useState, useEffect } from "react";
-import type { TmuxPane, ClaudeSessionEntry, PortMapping } from "@/bindings";
-import { commands } from "@/bindings";
+import type { TmuxPane, ClaudeSessionEntry, PortMapping } from "@/api";
+import * as api from "@/api";
 import { AppContext } from "@/lib/context";
 import { isShellPane, relativeTime } from "@/lib/helpers";
 import { Badge } from "@/components/ui/badge";
@@ -127,7 +127,7 @@ function PortsSection({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    commands
+    api
       .getContainerPorts(workspaceId)
       .then((result) => { if (!cancelled) { setPorts(result); setLoaded(true); } })
       .catch(() => { if (!cancelled) { setPorts([]); setLoaded(true); } });

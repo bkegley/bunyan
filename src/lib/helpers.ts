@@ -1,4 +1,4 @@
-import type { Workspace, WorkspacePaneInfo, TmuxPane, JsonValue } from "@/bindings";
+import type { Workspace, WorkspacePaneInfo, TmuxPane } from "@/api";
 import type { RepoConfig, WorktreeStatus } from "./types";
 
 export const SHELLS = ["zsh", "bash", "fish", "sh"];
@@ -12,7 +12,7 @@ export const EDITOR_DISPLAY_NAMES: Record<string, string> = {
   antigravity: "Antigravity",
 };
 
-export function asConfig(val: JsonValue | null): RepoConfig | null {
+export function asConfig(val: unknown | null): RepoConfig | null {
   if (val && typeof val === "object" && !Array.isArray(val)) {
     return val as unknown as RepoConfig;
   }

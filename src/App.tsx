@@ -1,14 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { homeDir } from "@tauri-apps/api/path";
-import {
-  commands,
-  type Repo,
-  type Workspace,
-  type JsonValue,
-  type ClaudeSessionEntry,
-  type WorkspacePaneInfo,
-  type ContainerMode,
-} from "./bindings";
+import * as api from "./api";
+import type {
+  Repo,
+  Workspace,
+  ClaudeSessionEntry,
+  WorkspacePaneInfo,
+  ContainerMode,
+} from "./api";
 import { checkForUpdates, type Update } from "./updater";
 import { AppContext } from "@/lib/context";
 import type { AppContextType } from "@/lib/types";
@@ -60,7 +58,7 @@ function App() {
 
   const pollSessions = useCallback(async () => {
     try {
-      const paneInfos = await commands.getActiveClaudeSessions();
+      const paneInfos = await api.getActiveClaudeSessions();
       const paneMap = new Map<string, WorkspacePaneInfo>();
       for (const info of paneInfos) {
         paneMap.set(info.workspace_id, info);
@@ -76,21 +74,21 @@ function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [repoList, wsList, home] = await Promise.all([
-          commands.listRepos(),
-          commands.listWorkspaces(null),
-          homeDir(),
+        const [repoList, wsList, sysInfo] = await Promise.all([
+          api.listRepos(),
+          api.listWorkspaces(null),
+          api.getSystemInfo(),
         ]);
         setRepos(repoList);
         setWorkspaces(wsList);
         setExpandedRepos(new Set(repoList.map((r) => r.id)));
-        setHomePath(home.replace(/\/$/, ""));
+        setHomePath(sysInfo.home_dir.replace(/\/$/, ""));
       } catch (e) {
         console.error("Failed to load initial data:", e);
       }
-      commands.checkDockerAvailable().then(setDockerAvailable).catch(() => {});
-      commands.detectEditors().then(setDetectedEditors).catch(() => {});
-      commands
+      api.checkDockerAvailable().then(setDockerAvailable).catch(() => {});
+      api.detectEditors().then(setDetectedEditors).catch(() => {});
+      api
         .getSetting("preferred_editor")
         .then((s) => setPreferredEditor(s.value))
         .catch(() => {});
@@ -127,9 +125,9 @@ function App() {
     if (selectedWorktreeId === prevSelectedRef.current) return;
     prevSelectedRef.current = selectedWorktreeId;
     setLoadingSessions(true);
-    commands
+    api
       .getWorkspaceSessions(selectedWorktreeId)
-      .then((sessions) => setSelectedSessions(sessions))
+      .then((sessions: ClaudeSessionEntry[]) => setSelectedSessions(sessions))
       .catch(() => setSelectedSessions([]))
       .finally(() => setLoadingSessions(false));
   }, [selectedWorktreeId]);
@@ -156,7 +154,7 @@ function App() {
       setCloneError(null);
       try {
         const rootPath = `${homePath}/bunyan/repos/${name}`;
-        const repo = await commands.createRepo({
+        const repo = await api.createRepo({
           name,
           remote_url: remoteUrl,
           root_path: rootPath,
@@ -178,8 +176,8 @@ function App() {
   );
 
   const handleUpdateRepoSettings = useCallback(
-    async (repoId: string, config: JsonValue | null) => {
-      const repo = await commands.updateRepo({
+    async (repoId: string, config: unknown | null) => {
+      const repo = await api.updateRepo({
         id: repoId,
         name: null,
         default_branch: null,
@@ -193,7 +191,7 @@ function App() {
 
   const handleDeleteRepo = useCallback(
     async (id: string) => {
-      await commands.deleteRepo(id);
+      await api.deleteRepo(id);
       setRepos((prev) => prev.filter((r) => r.id !== id));
       setWorkspaces((prev) => prev.filter((ws) => ws.repository_id !== id));
       if (selectedWorktreeId) {
@@ -206,7 +204,7 @@ function App() {
 
   const handleCreateWorkspace = useCallback(
     async (repoId: string, name: string, branch: string, containerMode?: ContainerMode) => {
-      const ws = await commands.createWorkspace({
+      const ws = await api.createWorkspace({
         repository_id: repoId,
         directory_name: name,
         branch,
@@ -222,7 +220,7 @@ function App() {
 
   const handleArchiveWorkspace = useCallback(
     async (id: string, force = false) => {
-      const updated = await commands.archiveWorkspace(id, force);
+      const updated = await api.archiveWorkspace(id, force);
       setWorkspaces((prev) => prev.map((ws) => (ws.id === updated.id ? updated : ws)));
       if (selectedWorktreeId === id) setSelectedWorktreeId(null);
       setArchiveTarget(null);
@@ -235,7 +233,7 @@ function App() {
     async (workspaceId: string) => {
       setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
-        await commands.openClaudeSession(workspaceId);
+        await api.openClaudeSession(workspaceId);
       } finally {
         setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
@@ -252,7 +250,7 @@ function App() {
     async (workspaceId: string) => {
       setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
-        await commands.openShellPane(workspaceId);
+        await api.openShellPane(workspaceId);
       } finally {
         setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
@@ -269,7 +267,7 @@ function App() {
     async (workspaceId: string) => {
       setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
-        await commands.viewWorkspace(workspaceId);
+        await api.viewWorkspace(workspaceId);
       } finally {
         setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
@@ -287,7 +285,7 @@ function App() {
       const editor = editorId ?? preferredEditor;
       setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
-        await commands.openInEditor(workspaceId, editor);
+        await api.openInEditor(workspaceId, editor);
       } finally {
         setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
@@ -303,7 +301,7 @@ function App() {
   const handleSetPreferredEditor = useCallback(async (editorId: string) => {
     setPreferredEditor(editorId);
     try {
-      await commands.setSetting("preferred_editor", editorId);
+      await api.setSetting("preferred_editor", editorId);
     } catch {
       // silent
     }
@@ -312,7 +310,7 @@ function App() {
   const handleKillPane = useCallback(
     async (workspaceId: string, paneIndex: number) => {
       try {
-        await commands.killPane(workspaceId, paneIndex);
+        await api.killPane(workspaceId, paneIndex);
       } finally {
         setTimeout(pollSessions, 500);
       }
@@ -324,7 +322,7 @@ function App() {
     async (workspaceId: string, sessionId: string) => {
       setOpeningSession((prev: Set<string>) => new Set([...prev, workspaceId]));
       try {
-        await commands.resumeClaudeSession(workspaceId, sessionId);
+        await api.resumeClaudeSession(workspaceId, sessionId);
       } finally {
         setOpeningSession((prev: Set<string>) => {
           const next = new Set(prev);
