@@ -4,6 +4,8 @@ Base URL: `http://127.0.0.1:3333` (or check `~/.bunyan/server.port`)
 
 All request/response bodies are JSON. Errors return `{"error": "<message>"}` with appropriate HTTP status.
 
+The full OpenAPI spec is served at `GET /api-doc/openapi.json`.
+
 ## Health
 
 ### GET /health
@@ -116,6 +118,23 @@ Container state. Returns `{"status": "running" | "exited" | "none"}`.
 
 ### GET /workspaces/:id/container/ports
 Port mappings. Returns `PortMapping[]`.
+
+## Editors
+
+### GET /editors
+Detect installed editors (VSCode, Cursor, Zed, Windsurf, Antigravity). Returns `string[]` of editor IDs.
+
+### POST /workspaces/:id/editor
+Open the workspace directory in the specified editor.
+
+Body: `{"editor_id": "string"}`
+
+Returns `{"status": "opened"}`.
+
+## System
+
+### GET /system/info
+System metadata. Returns `{"home_dir": "string"}`.
 
 ## Settings
 

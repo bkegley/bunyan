@@ -17,10 +17,10 @@ curl -s http://127.0.0.1:3333/health
 
 If unreachable, start it:
 ```bash
-bunyan serve &
+bunyan up
 ```
 
-Or check `~/.bunyan/server.port` for the actual port.
+`bunyan up` spawns the daemon in the background. Use `bunyan down` to stop it, or `bunyan serve` to run it in the foreground. Check `~/.bunyan/server.port` for the actual port if a non-default one was used.
 
 ## Quick Reference
 
@@ -43,6 +43,10 @@ Or check `~/.bunyan/server.port` for the actual port.
 | Docker status | GET | `/docker/status` |
 | Container status | GET | `/workspaces/:id/container/status` |
 | Container ports | GET | `/workspaces/:id/container/ports` |
+| Detect editors | GET | `/editors` |
+| Open in editor | POST | `/workspaces/:id/editor` |
+| System info | GET | `/system/info` |
+| OpenAPI spec | GET | `/api-doc/openapi.json` |
 | List settings | GET | `/settings` |
 | Get setting | GET | `/settings/:key` |
 | Set setting | PUT | `/settings/:key` |

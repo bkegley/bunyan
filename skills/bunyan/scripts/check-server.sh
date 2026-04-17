@@ -13,6 +13,6 @@ if curl -sf "http://127.0.0.1:$PORT/health" > /dev/null 2>&1; then
     exit 0
 else
     echo "Bunyan server is not reachable on port $PORT"
-    echo "Start it with: bunyan serve --port $PORT"
+    echo "Start it with: bunyan up --port $PORT"
     exit 1
 fi
