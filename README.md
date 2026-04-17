@@ -20,6 +20,20 @@ bunyan workspace create --repo <repo-id> --name feature-x --branch feature-x
 
 `bunyan --help` lists every subcommand. Stop the daemon with `bunyan down`.
 
+## Coding Agent Skill
+
+This repo ships a skill at `skills/bunyan/` that teaches coding agents (Claude Code, Cursor, etc.) how to drive the Bunyan HTTP API. Install it with [skills.sh](https://skills.sh):
+
+```sh
+# Project-scoped
+npx skills add bkegley/bunyan
+
+# Global
+npx skills add bkegley/bunyan -g
+```
+
+skills.sh auto-detects installed agents. Pass `-a <agent>` to target a specific one.
+
 ## Features
 
 - **Worktree-based workflows** — Each task gets its own Git worktree with an isolated branch, dependencies, and state. No more stashing or context-switching.
