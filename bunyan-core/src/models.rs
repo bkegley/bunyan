@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Repo {
     pub id: String,
     pub name: String,
@@ -17,7 +17,7 @@ pub struct Repo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct CreateRepoInput {
     pub name: String,
     pub remote_url: String,
@@ -39,7 +39,7 @@ fn default_remote() -> String {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct UpdateRepoInput {
     pub id: String,
     pub name: Option<String>,
@@ -49,7 +49,7 @@ pub struct UpdateRepoInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceState {
     Ready,
@@ -74,7 +74,7 @@ impl WorkspaceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerMode {
     Local,
@@ -103,7 +103,7 @@ fn default_container_mode() -> ContainerMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct ContainerConfig {
     pub enabled: bool,
     pub image: Option<String>,
@@ -115,7 +115,7 @@ pub struct ContainerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Workspace {
     pub id: String,
     pub repository_id: String,
@@ -129,7 +129,7 @@ pub struct Workspace {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct CreateWorkspaceInput {
     pub repository_id: String,
     pub directory_name: String,
@@ -139,7 +139,7 @@ pub struct CreateWorkspaceInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Setting {
     pub key: String,
     pub value: String,
@@ -149,7 +149,7 @@ pub struct Setting {
 
 /// A tmux pane within the Bunyan-managed tmux server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct TmuxPane {
     /// Pane index within its window
     pub pane_index: u32,
@@ -165,7 +165,7 @@ pub struct TmuxPane {
 
 /// Info about all panes in a workspace's tmux window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct WorkspacePaneInfo {
     pub workspace_id: String,
     pub repo_name: String,
@@ -175,7 +175,7 @@ pub struct WorkspacePaneInfo {
 
 /// Port mapping for a running container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct PortMapping {
     pub container_port: String, // e.g. "3000/tcp"
     pub host_port: String,      // e.g. "3000"
@@ -184,7 +184,7 @@ pub struct PortMapping {
 
 /// A single session entry from ~/.claude/projects/<path>/sessions-index.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct ClaudeSessionEntry {
     #[serde(alias = "sessionId")]
     pub session_id: String,
@@ -198,4 +198,61 @@ pub struct ClaudeSessionEntry {
     pub git_branch: Option<String>,
     #[serde(alias = "isSidechain")]
     pub is_sidechain: Option<bool>,
+}
+
+// --- API request/response types ---
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct StatusResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct DockerStatusResponse {
+    pub available: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct ContainerStatusResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct ClaudeResumeInput {
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct OpenEditorInput {
+    pub editor_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct ArchiveInput {
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct SetSettingInput {
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct SystemInfo {
+    pub home_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct ErrorResponse {
+    pub error: String,
 }

@@ -1,6 +1,13 @@
 use axum::Json;
-use serde_json::{json, Value};
+use crate::models::StatusResponse;
 
-pub async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses((status = 200, body = StatusResponse)),
+    operation_id = "health_check",
+    tag = "health"
+)]
+pub async fn health() -> Json<StatusResponse> {
+    Json(StatusResponse { status: "ok".into() })
 }

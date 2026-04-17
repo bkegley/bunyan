@@ -9,6 +9,7 @@ use crate::server::error::ApiError;
 use crate::state::AppState;
 use crate::tmux;
 
+#[utoipa::path(get, path = "/sessions/active", responses((status = 200, body = Vec<WorkspacePaneInfo>), (status = 500, body = crate::models::ErrorResponse)), operation_id = "active_sessions", tag = "sessions")]
 pub async fn active(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<WorkspacePaneInfo>>, ApiError> {

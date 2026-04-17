@@ -5,13 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-specta = ["dep:specta"]
-server = ["dep:axum", "dep:tower-http", "dep:tokio"]
-
-[[bin]]
-name = "bunyan-server"
-path = "src/bin/serve.rs"
-required-features = ["server"]
+server = ["dep:axum", "dep:tower-http", "dep:tokio", "dep:utoipa", "dep:utoipa-axum"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -23,10 +17,9 @@ dirs = "5"
 bollard = "0.18"
 futures-util = "0.3"
 
-# Optional: specta for Tauri type generation
-specta = { version = "=2.0.0-rc.22", features = ["serde_json"], optional = true }
-
 # Optional: server dependencies
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"], optional = true }
+utoipa = { version = "5", features = ["axum_extras"], optional = true }
+utoipa-axum = { version = "0.2", optional = true }

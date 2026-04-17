@@ -8,7 +8,8 @@ use crate::db;
 use crate::docker;
 use crate::git::{GitOps, RealGit};
 use crate::models::{
-    ClaudeSessionEntry, ContainerMode, CreateWorkspaceInput, TmuxPane, Workspace,
+    ClaudeResumeInput, ClaudeSessionEntry, ContainerMode, CreateWorkspaceInput, ErrorResponse,
+    StatusResponse, TmuxPane, Workspace,
 };
 use crate::server::error::ApiError;
 use crate::sessions;
@@ -22,6 +23,7 @@ pub struct ListQuery {
     pub repo_id: Option<String>,
 }
 
+#[utoipa::path(get, path = "/workspaces", params(("repo_id" = Option<String>, Query, description = "Filter by repository ID")), responses((status = 200, body = Vec<Workspace>), (status = 500, body = ErrorResponse)), operation_id = "list_workspaces", tag = "workspaces")]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListQuery>,
@@ -31,6 +33,7 @@ pub async fn list(
     Ok(Json(workspaces))
 }
 
+#[utoipa::path(get, path = "/workspaces/{id}", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = Workspace), (status = 404, body = ErrorResponse)), operation_id = "get_workspace", tag = "workspaces")]
 pub async fn get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -40,6 +43,7 @@ pub async fn get(
     Ok(Json(ws))
 }
 
+#[utoipa::path(post, path = "/workspaces", request_body = CreateWorkspaceInput, responses((status = 200, body = Workspace), (status = 500, body = ErrorResponse)), operation_id = "create_workspace", tag = "workspaces")]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Json(input): Json<CreateWorkspaceInput>,
@@ -77,6 +81,7 @@ pub async fn create(
     Ok(Json(ws))
 }
 
+#[utoipa::path(post, path = "/workspaces/{id}/archive", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = Workspace), (status = 404, body = ErrorResponse)), operation_id = "archive_workspace", tag = "workspaces")]
 pub async fn archive(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -122,6 +127,7 @@ pub async fn archive(
     Ok(Json(archived))
 }
 
+#[utoipa::path(get, path = "/workspaces/{id}/sessions", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = Vec<ClaudeSessionEntry>), (status = 404, body = ErrorResponse)), tag = "workspaces")]
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -143,6 +149,7 @@ pub async fn get_sessions(
     Ok(Json(result))
 }
 
+#[utoipa::path(get, path = "/workspaces/{id}/panes", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = Vec<TmuxPane>), (status = 404, body = ErrorResponse)), tag = "workspaces")]
 pub async fn get_panes(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -163,15 +170,11 @@ pub async fn get_panes(
     Ok(Json(panes))
 }
 
-#[derive(Deserialize)]
-pub struct ClaudeResumeInput {
-    pub session_id: String,
-}
-
+#[utoipa::path(post, path = "/workspaces/{id}/claude", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = StatusResponse), (status = 404, body = ErrorResponse)), tag = "workspaces")]
 pub async fn start_claude(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let (ws, repo, ws_path) = {
         let conn = state.db.lock().unwrap();
         workspace::resolve_workspace_path(&conn, &id)?
@@ -197,7 +200,7 @@ pub async fn start_claude(
             .await
             .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
             .map_err(ApiError)?;
-        return Ok(Json(serde_json::json!({ "status": "attached" })));
+        return Ok(Json(StatusResponse { status: "attached".into() }));
     }
 
     let has_previous = {
@@ -243,14 +246,15 @@ pub async fn start_claude(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    Ok(Json(serde_json::json!({ "status": "created" })))
+    Ok(Json(StatusResponse { status: "created".into() }))
 }
 
+#[utoipa::path(post, path = "/workspaces/{id}/claude/resume", params(("id" = String, Path, description = "Workspace ID")), request_body = ClaudeResumeInput, responses((status = 200, body = StatusResponse), (status = 404, body = ErrorResponse)), tag = "workspaces")]
 pub async fn resume_claude(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(input): Json<ClaudeResumeInput>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     workspace::validate_session_id(&input.session_id)
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e)))?;
 
@@ -279,7 +283,7 @@ pub async fn resume_claude(
             .await
             .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
             .map_err(ApiError)?;
-        return Ok(Json(serde_json::json!({ "status": "attached" })));
+        return Ok(Json(StatusResponse { status: "attached".into() }));
     }
 
     let skip_perms = ws.container_mode == ContainerMode::Container
@@ -332,13 +336,14 @@ pub async fn resume_claude(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    Ok(Json(serde_json::json!({ "status": "resumed" })))
+    Ok(Json(StatusResponse { status: "resumed".into() }))
 }
 
+#[utoipa::path(post, path = "/workspaces/{id}/shell", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = StatusResponse), (status = 404, body = ErrorResponse)), tag = "workspaces")]
 pub async fn open_shell(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let (ws, repo, ws_path) = {
         let conn = state.db.lock().unwrap();
         workspace::resolve_workspace_path(&conn, &id)?
@@ -397,13 +402,14 @@ pub async fn open_shell(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    Ok(Json(serde_json::json!({ "status": "created" })))
+    Ok(Json(StatusResponse { status: "created".into() }))
 }
 
+#[utoipa::path(post, path = "/workspaces/{id}/view", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = StatusResponse), (status = 404, body = ErrorResponse)), operation_id = "view_workspace", tag = "workspaces")]
 pub async fn view(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let (ws, repo, ws_path) = {
         let conn = state.db.lock().unwrap();
         workspace::resolve_workspace_path(&conn, &id)?
@@ -424,13 +430,14 @@ pub async fn view(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    Ok(Json(serde_json::json!({ "status": "attached" })))
+    Ok(Json(StatusResponse { status: "attached".into() }))
 }
 
+#[utoipa::path(delete, path = "/workspaces/{id}/panes/{index}", params(("id" = String, Path, description = "Workspace ID"), ("index" = u32, Path, description = "Pane index")), responses((status = 200, body = StatusResponse), (status = 404, body = ErrorResponse)), tag = "workspaces")]
 pub async fn kill_pane_handler(
     State(state): State<Arc<AppState>>,
     Path((id, pane_index)): Path<(String, u32)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let (ws, repo, _) = {
         let conn = state.db.lock().unwrap();
         workspace::resolve_workspace_path(&conn, &id)?
@@ -443,5 +450,5 @@ pub async fn kill_pane_handler(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    Ok(Json(serde_json::json!({ "status": "killed" })))
+    Ok(Json(StatusResponse { status: "killed".into() }))
 }

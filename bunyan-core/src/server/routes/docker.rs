@@ -5,19 +5,21 @@ use axum::Json;
 
 use crate::db;
 use crate::docker;
-use crate::models::PortMapping;
+use crate::models::{ContainerStatusResponse, DockerStatusResponse, ErrorResponse, PortMapping};
 use crate::server::error::ApiError;
 use crate::state::AppState;
 
-pub async fn status() -> Result<Json<serde_json::Value>, ApiError> {
+#[utoipa::path(get, path = "/docker/status", responses((status = 200, body = DockerStatusResponse), (status = 500, body = ErrorResponse)), operation_id = "docker_status", tag = "docker")]
+pub async fn status() -> Result<Json<DockerStatusResponse>, ApiError> {
     let available = docker::check_docker().await.map_err(ApiError)?;
-    Ok(Json(serde_json::json!({ "available": available })))
+    Ok(Json(DockerStatusResponse { available }))
 }
 
+#[utoipa::path(get, path = "/workspaces/{id}/container/status", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = ContainerStatusResponse), (status = 404, body = ErrorResponse)), tag = "docker")]
 pub async fn container_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<ContainerStatusResponse>, ApiError> {
     let container_id = {
         let conn = state.db.lock().unwrap();
         let ws = db::workspaces::get(&conn, &id)?;
@@ -29,9 +31,10 @@ pub async fn container_status(
         None => "none".to_string(),
     };
 
-    Ok(Json(serde_json::json!({ "status": status })))
+    Ok(Json(ContainerStatusResponse { status }))
 }
 
+#[utoipa::path(get, path = "/workspaces/{id}/container/ports", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = Vec<PortMapping>), (status = 404, body = ErrorResponse)), tag = "docker")]
 pub async fn container_ports(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

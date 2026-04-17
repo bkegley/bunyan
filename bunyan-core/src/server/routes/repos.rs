@@ -5,16 +5,36 @@ use axum::Json;
 
 use crate::db;
 use crate::git::{GitOps, RealGit};
-use crate::models::{CreateRepoInput, Repo, UpdateRepoInput};
+use crate::models::{CreateRepoInput, ErrorResponse, Repo, UpdateRepoInput};
 use crate::server::error::ApiError;
 use crate::state::AppState;
 
+#[utoipa::path(
+    get,
+    path = "/repos",
+    responses(
+        (status = 200, body = Vec<Repo>),
+        (status = 500, body = ErrorResponse)
+    ),
+    operation_id = "list_repos", tag = "repos"
+)]
 pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Repo>>, ApiError> {
     let conn = state.db.lock().unwrap();
     let repos = db::repos::list(&conn)?;
     Ok(Json(repos))
 }
 
+#[utoipa::path(
+    get,
+    path = "/repos/{id}",
+    params(("id" = String, Path, description = "Repository ID")),
+    responses(
+        (status = 200, body = Repo),
+        (status = 404, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    operation_id = "get_repo", tag = "repos"
+)]
 pub async fn get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -24,6 +44,16 @@ pub async fn get(
     Ok(Json(repo))
 }
 
+#[utoipa::path(
+    post,
+    path = "/repos",
+    request_body = CreateRepoInput,
+    responses(
+        (status = 200, body = Repo),
+        (status = 500, body = ErrorResponse)
+    ),
+    operation_id = "create_repo", tag = "repos"
+)]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Json(input): Json<CreateRepoInput>,
@@ -43,6 +73,18 @@ pub async fn create(
     Ok(Json(repo))
 }
 
+#[utoipa::path(
+    put,
+    path = "/repos/{id}",
+    params(("id" = String, Path, description = "Repository ID")),
+    request_body = UpdateRepoInput,
+    responses(
+        (status = 200, body = Repo),
+        (status = 404, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    operation_id = "update_repo", tag = "repos"
+)]
 pub async fn update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -54,6 +96,17 @@ pub async fn update(
     Ok(Json(repo))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/repos/{id}",
+    params(("id" = String, Path, description = "Repository ID")),
+    responses(
+        (status = 200),
+        (status = 404, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    operation_id = "delete_repo", tag = "repos"
+)]
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
