@@ -62,12 +62,20 @@ enum Command {
     },
     /// Check server health and Docker availability
     Status,
-    /// Start the headless bunyan server
+    /// Start the bunyan server in the foreground
     Serve {
         /// Port to listen on (default: 3333)
         #[arg(long, default_value = "3333")]
         port: u16,
     },
+    /// Start the bunyan server as a background daemon
+    Up {
+        /// Port to listen on (default: 3333)
+        #[arg(long, default_value = "3333")]
+        port: u16,
+    },
+    /// Stop the running bunyan daemon
+    Down,
 }
 
 fn main() {
@@ -88,6 +96,12 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(bunyan_core::server::start_server(state, port));
         }
+        Command::Up { port } => {
+            run_up(port);
+        }
+        Command::Down => {
+            run_down(cli.port);
+        }
         cmd => {
             let base_url = config::discover_server_url(cli.port);
             let client = BunyanClient::new(&base_url);
@@ -100,8 +114,88 @@ fn main() {
                 Command::Docker { cmd: sub } => commands::docker::run(&client, sub, mode),
                 Command::Settings { cmd: sub } => commands::settings::run(&client, sub, mode),
                 Command::Status => run_status(&client, mode),
-                Command::Serve { .. } => unreachable!(),
+                Command::Serve { .. } | Command::Up { .. } | Command::Down => unreachable!(),
             }
+        }
+    }
+}
+
+fn run_up(port: u16) {
+    let url = format!("http://127.0.0.1:{}/health", port);
+
+    // Check if already running
+    if ureq::get(&url).call().map(|r| r.status() == 200).unwrap_or(false) {
+        eprintln!("bunyan daemon already running on port {}", port);
+        return;
+    }
+
+    // Spawn ourselves with `serve` in the background
+    let self_bin = std::env::current_exe().expect("Cannot determine own binary path");
+
+    std::process::Command::new(&self_bin)
+        .args(["serve", "--port", &port.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("Failed to spawn bunyan serve");
+
+    // Wait for ready
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if ureq::get(&url).call().map(|r| r.status() == 200).unwrap_or(false) {
+            eprintln!("bunyan daemon started on port {}", port);
+            return;
+        }
+    }
+    eprintln!("bunyan daemon did not start within 5 seconds");
+    std::process::exit(1);
+}
+
+fn run_down(port_override: Option<u16>) {
+    let base_url = config::discover_server_url(port_override);
+    let url = format!("{}/health", base_url);
+
+    if !ureq::get(&url).call().map(|r| r.status() == 200).unwrap_or(false) {
+        eprintln!("bunyan daemon is not running");
+        return;
+    }
+
+    // Read PID from port file and send SIGTERM
+    let port_file = dirs::home_dir()
+        .expect("Cannot determine home directory")
+        .join(".bunyan")
+        .join("server.port");
+
+    // The server listens for SIGTERM and cleans up, but we need its PID.
+    // Simplest: find the process listening on the port.
+    let port = port_override
+        .or_else(|| std::env::var("BUNYAN_PORT").ok().and_then(|p| p.parse().ok()))
+        .or_else(|| {
+            std::fs::read_to_string(&port_file)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+        })
+        .unwrap_or(3333);
+
+    let output = std::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", port)])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let pids = String::from_utf8_lossy(&out.stdout);
+            for pid in pids.trim().lines() {
+                if let Ok(pid_num) = pid.trim().parse::<i32>() {
+                    unsafe {
+                        libc::kill(pid_num, libc::SIGTERM);
+                    }
+                }
+            }
+            eprintln!("bunyan daemon stopped");
+        }
+        _ => {
+            eprintln!("Could not find bunyan daemon process");
+            std::process::exit(1);
         }
     }
 }
