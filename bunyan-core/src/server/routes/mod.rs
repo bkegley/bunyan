@@ -6,3 +6,4 @@ pub mod docker;
 pub mod settings;
 pub mod editors;
 pub mod system;
+pub mod hooks;

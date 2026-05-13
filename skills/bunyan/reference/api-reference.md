@@ -79,7 +79,7 @@ Returns `Workspace`.
 Archive a workspace. Removes worktree, kills panes, removes container. Returns `Workspace`.
 
 ### POST /workspaces/:id/view
-Focus workspace in iTerm. Returns `{"status": "attached"}`.
+Fire the `workspace.ready_to_view` hook to surface the workspace (open a terminal, focus a window, etc.). If no hook is configured, bunyan logs a note and the response is still 200. Returns `{"status": "attached"}`.
 
 ### GET /workspaces/:id/sessions
 Get Claude session history. Returns `ClaudeSessionEntry[]`.

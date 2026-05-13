@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::db;
 use crate::docker;
+use crate::events::{self, names};
 use crate::git::{GitOps, RealGit};
 use crate::models::{
     ClaudeResumeInput, ClaudeSessionEntry, ContainerMode, CreateWorkspaceInput, ErrorResponse,
@@ -88,9 +89,10 @@ pub async fn create(
     let branch = input.branch.clone();
     let container_mode = input.container_mode.clone();
 
+    let wt_path_for_git = wt_path.clone();
     tokio::task::spawn_blocking(move || {
         let git = RealGit;
-        git.worktree_add(&repo_root, &wt_path, &branch)
+        git.worktree_add(&repo_root, &wt_path_for_git, &branch)
     })
     .await
     .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
@@ -101,14 +103,29 @@ pub async fn create(
         db::workspaces::create(&conn, input)?
     };
 
-    if container_mode == ContainerMode::Container {
-        let updated = workspace::setup_workspace_container(&state, &ws, &repo)
+    let final_ws = if container_mode == ContainerMode::Container {
+        workspace::setup_workspace_container(&state, &ws, &repo)
             .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e)))?;
-        return Ok(Json(updated));
-    }
+            .map_err(|e| ApiError(crate::error::BunyanError::Process(e)))?
+    } else {
+        ws
+    };
 
-    Ok(Json(ws))
+    let ws_clone = final_ws.clone();
+    let repo_clone = repo.clone();
+    let wt_clone = wt_path.clone();
+    tokio::task::spawn_blocking(move || {
+        events::fire_workspace_event(
+            names::WORKSPACE_CREATED,
+            &ws_clone,
+            &repo_clone,
+            &wt_clone,
+        );
+    })
+    .await
+    .ok();
+
+    Ok(Json(final_ws))
 }
 
 #[utoipa::path(post, path = "/workspaces/{id}/archive", params(("id" = String, Path, description = "Workspace ID")), responses((status = 200, body = Workspace), (status = 404, body = ErrorResponse)), operation_id = "archive_workspace", tag = "workspaces")]
@@ -122,6 +139,22 @@ pub async fn archive(
         let rp = db::repos::get(&conn, &ws.repository_id)?;
         (ws, rp)
     };
+
+    let wt_path_for_event =
+        workspace::workspace_path(&repo.root_path, &repo.name, &ws.directory_name)?;
+    let ws_clone = ws.clone();
+    let repo_clone = repo.clone();
+    let wt_clone = wt_path_for_event.clone();
+    tokio::task::spawn_blocking(move || {
+        events::fire_workspace_event(
+            names::WORKSPACE_ARCHIVED,
+            &ws_clone,
+            &repo_clone,
+            &wt_clone,
+        );
+    })
+    .await
+    .ok();
 
     workspace::kill_workspace_window(&repo.name, &ws.directory_name);
 
@@ -264,6 +297,22 @@ pub async fn start_claude(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
+    {
+        let ws_clone = ws.clone();
+        let repo_clone = repo.clone();
+        let wp_clone = ws_path.clone();
+        tokio::task::spawn_blocking(move || {
+            events::fire_workspace_event(
+                names::CLAUDE_STARTED,
+                &ws_clone,
+                &repo_clone,
+                &wp_clone,
+            );
+        })
+        .await
+        .ok();
+    }
+
     view_workspace(&ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "created".into() }))
@@ -342,6 +391,24 @@ pub async fn resume_claude(
             .await
             .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
             .map_err(ApiError)?;
+    }
+
+    {
+        let ws_clone = ws.clone();
+        let repo_clone = repo.clone();
+        let wp_clone = ws_path.clone();
+        let session_id = input.session_id.clone();
+        tokio::task::spawn_blocking(move || {
+            events::fire_workspace_event_with_extras(
+                names::CLAUDE_RESUMED,
+                &ws_clone,
+                &repo_clone,
+                &wp_clone,
+                &[("session_id", &session_id)],
+            );
+        })
+        .await
+        .ok();
     }
 
     view_workspace(&ws, &repo, &ws_path).await?;

@@ -51,8 +51,8 @@ function App() {
   const [selectedSessions, setSelectedSessions] = useState<ClaudeSessionEntry[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const prevSelectedRef = useRef<string | null>(null);
-  const [detectedEditors, setDetectedEditors] = useState<string[]>(["iterm"]);
-  const [preferredEditor, setPreferredEditor] = useState("iterm");
+  const [detectedEditors, setDetectedEditors] = useState<string[]>([]);
+  const [preferredEditor, setPreferredEditor] = useState("");
 
   // ---- Polling ----
 

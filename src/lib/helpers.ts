@@ -4,7 +4,6 @@ import type { RepoConfig, WorktreeStatus } from "./types";
 export const SHELLS = ["zsh", "bash", "fish", "sh"];
 
 export const EDITOR_DISPLAY_NAMES: Record<string, string> = {
-  iterm: "iTerm",
   vscode: "VS Code",
   cursor: "Cursor",
   zed: "Zed",

@@ -15,12 +15,19 @@
 //! A hook may return exit code 78 to short-circuit further hooks for this event.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use serde_json::json;
+
+/// Schema version of the JSON payload piped to hooks on stdin. Bump when
+/// fields are removed or renamed. New fields can be added without a bump —
+/// hooks ignore unknown fields.
+pub const PAYLOAD_VERSION: u32 = 1;
 
 const SHORT_CIRCUIT_EXIT_CODE: i32 = 78;
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
@@ -129,6 +136,62 @@ impl HookContext {
 
     fn timestamp(&self) -> String {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    }
+
+    /// Build the JSON payload that gets piped to hooks on stdin. Hooks in
+    /// Python/Node/Deno typically prefer this over env vars for nested data.
+    pub fn build_payload(&self) -> serde_json::Value {
+        let mut repo = serde_json::Map::new();
+        if let Some(v) = &self.repo_id {
+            repo.insert("id".into(), json!(v));
+        }
+        if let Some(v) = &self.repo_name {
+            repo.insert("name".into(), json!(v));
+        }
+        if let Some(v) = &self.repo_root_path {
+            repo.insert("path".into(), json!(v));
+        }
+
+        let mut workspace = serde_json::Map::new();
+        if let Some(v) = &self.workspace_id {
+            workspace.insert("id".into(), json!(v));
+        }
+        if let Some(v) = &self.workspace_name {
+            workspace.insert("name".into(), json!(v));
+        }
+        if let Some(v) = &self.workspace_path {
+            workspace.insert("path".into(), json!(v));
+        }
+        if let Some(v) = &self.branch {
+            workspace.insert("branch".into(), json!(v));
+        }
+
+        let mut server = serde_json::Map::new();
+        if let Some(p) = self.server_port {
+            server.insert("port".into(), json!(p));
+        }
+
+        let mut payload = serde_json::Map::new();
+        payload.insert("event".into(), json!(self.event));
+        payload.insert("version".into(), json!(PAYLOAD_VERSION));
+        payload.insert("timestamp".into(), json!(self.timestamp()));
+        if !server.is_empty() {
+            payload.insert("server".into(), serde_json::Value::Object(server));
+        }
+        if !repo.is_empty() {
+            payload.insert("repo".into(), serde_json::Value::Object(repo));
+        }
+        if !workspace.is_empty() {
+            payload.insert("workspace".into(), serde_json::Value::Object(workspace));
+        }
+        if !self.extras.is_empty() {
+            let mut ex = serde_json::Map::new();
+            for (k, v) in &self.extras {
+                ex.insert(k.clone(), json!(v));
+            }
+            payload.insert("extras".into(), serde_json::Value::Object(ex));
+        }
+        serde_json::Value::Object(payload)
     }
 
     /// Build the environment variable map a hook will receive.
@@ -256,7 +319,9 @@ fn default_timeout_for(event: &str) -> Duration {
 
 /// Run all discovered hooks for an event, in order.
 ///
-/// - Each hook gets the context as environment variables.
+/// - Each hook gets the context as environment variables AND as a JSON
+///   payload on stdin (env vars are the canonical surface; stdin is for
+///   richer/nested data).
 /// - Each hook runs with a per-event timeout; on timeout, the child is killed.
 /// - A hook returning exit code 78 stops further hooks for this event.
 /// - Hook failures are logged to stderr and do not crash the caller.
@@ -264,10 +329,11 @@ pub fn fire(roots: &dyn HookRoots, ctx: &HookContext) -> HookRunResult {
     let hooks = discover_hooks(roots, &ctx.event, ctx.repo_name.as_deref());
     let timeout = default_timeout_for(&ctx.event);
     let env = ctx.build_env();
+    let payload = serde_json::to_vec(&ctx.build_payload()).unwrap_or_default();
 
     let mut result = HookRunResult::default();
     for hook in hooks {
-        let outcome = run_one(&hook, &env, timeout);
+        let outcome = run_one(&hook, &env, &payload, timeout);
         let short_circuit = outcome.short_circuited();
         log_outcome(&ctx.event, &outcome);
         result.outcomes.push(outcome);
@@ -278,11 +344,16 @@ pub fn fire(roots: &dyn HookRoots, ctx: &HookContext) -> HookRunResult {
     result
 }
 
-fn run_one(path: &Path, env: &HashMap<String, String>, timeout: Duration) -> HookOutcome {
+fn run_one(
+    path: &Path,
+    env: &HashMap<String, String>,
+    stdin_payload: &[u8],
+    timeout: Duration,
+) -> HookOutcome {
     let start = Instant::now();
     let mut cmd = Command::new(path);
     cmd.envs(env)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -306,6 +377,13 @@ fn run_one(path: &Path, env: &HashMap<String, String>, timeout: Duration) -> Hoo
     //   2. After we kill a hook that spawned grandchildren, the parent
     //      process is gone but the orphaned grandchildren may still hold the
     //      pipe open. Reading on a thread lets us bound the total wait time.
+    if let Some(mut stdin) = child.stdin.take() {
+        let payload = stdin_payload.to_vec();
+        thread::spawn(move || {
+            // Hook may not read stdin; ignore broken-pipe errors.
+            let _ = stdin.write_all(&payload);
+        });
+    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_handle = stdout.map(|mut s| {
@@ -638,6 +716,59 @@ mod tests {
         let content = fs::read_to_string(&marker).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines, vec!["repo", "user"]);
+    }
+
+    #[test]
+    fn stdin_payload_is_json_with_event_version_and_workspace() {
+        let tmp = unique_tempdir("stdin_payload");
+        let marker = tmp.join("stdin.json");
+        let script = format!("#!/bin/sh\ncat > {}\n", marker.display());
+        write_hook(&tmp.join("workspace.created"), &script);
+
+        let roots = StaticRoots {
+            user: Some(tmp.clone()),
+            repo: None,
+        };
+        let ctx = HookContext::new("workspace.created")
+            .with_repo("frontend", "repo-id")
+            .with_workspace("ws-name", "ws-id", "/tmp/p")
+            .with_branch("fix")
+            .with_server_port(3333)
+            .with_extra("hint", "abc");
+
+        let result = fire(&roots, &ctx);
+        assert_eq!(result.outcomes.len(), 1);
+        assert_eq!(result.outcomes[0].exit_code, Some(0));
+
+        let body = fs::read_to_string(&marker).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["event"], "workspace.created");
+        assert_eq!(v["version"], PAYLOAD_VERSION);
+        assert_eq!(v["repo"]["name"], "frontend");
+        assert_eq!(v["repo"]["id"], "repo-id");
+        assert_eq!(v["workspace"]["name"], "ws-name");
+        assert_eq!(v["workspace"]["id"], "ws-id");
+        assert_eq!(v["workspace"]["path"], "/tmp/p");
+        assert_eq!(v["workspace"]["branch"], "fix");
+        assert_eq!(v["server"]["port"], 3333);
+        assert_eq!(v["extras"]["hint"], "abc");
+        assert!(v["timestamp"].is_string());
+    }
+
+    #[test]
+    fn hook_can_ignore_stdin() {
+        // Ensure piping JSON to a hook that doesn't read stdin still works
+        // (the broken-pipe write must not crash bunyan).
+        let tmp = unique_tempdir("stdin_ignore");
+        write_hook(&tmp.join("evt"), "#!/bin/sh\nexit 0\n");
+        let roots = StaticRoots {
+            user: Some(tmp),
+            repo: None,
+        };
+        let ctx = HookContext::new("evt").with_repo("r", "id");
+        let result = fire(&roots, &ctx);
+        assert_eq!(result.outcomes.len(), 1);
+        assert_eq!(result.outcomes[0].exit_code, Some(0));
     }
 
     #[test]

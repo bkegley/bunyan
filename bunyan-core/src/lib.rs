@@ -10,6 +10,7 @@ pub mod docker;
 pub mod workspace;
 pub mod sessions;
 pub mod hooks;
+pub mod events;
 
 #[cfg(feature = "server")]
 pub mod server;

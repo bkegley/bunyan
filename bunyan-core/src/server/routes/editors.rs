@@ -31,48 +31,16 @@ pub async fn open(
         )))
     })?;
 
-    let (ws, repo, ws_path) = {
+    let (_ws, _repo, ws_path) = {
         let conn = state.db.lock().unwrap();
         workspace::resolve_workspace_path(&conn, &id)?
     };
 
-    if ed == editor::Editor::Iterm {
-        let rn = repo.name.clone();
-        let wn = ws.directory_name.clone();
-        let wp = ws_path.clone();
-        tokio::task::spawn_blocking(move || crate::tmux::ensure_workspace_window(&rn, &wn, &wp))
-            .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-            .map_err(ApiError)?;
-
-        let rn = repo.name.clone();
-        let wn = ws.directory_name.clone();
-        let wp = ws_path.clone();
-        let wid = ws.id.clone();
-        let rid = repo.id.clone();
-        let branch = ws.branch.clone();
-        let root = repo.root_path.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::terminal::open_workspace_view(
-                &rn,
-                &wn,
-                Some(&wp),
-                Some(&wid),
-                Some(&rid),
-                Some(&branch),
-                Some(&root),
-            )
-        })
+    let wp = ws_path.clone();
+    tokio::task::spawn_blocking(move || editor::open_in_editor(&ed, &wp))
         .await
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
-    } else {
-        let wp = ws_path.clone();
-        tokio::task::spawn_blocking(move || editor::open_in_editor(&ed, &wp))
-            .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-            .map_err(ApiError)?;
-    }
 
     Ok(Json(StatusResponse { status: "opened".into() }))
 }

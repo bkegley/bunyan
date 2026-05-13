@@ -1,7 +1,19 @@
-use std::path::PathBuf;
-use std::process::Command;
+//! Workspace view dispatch.
+//!
+//! Bunyan no longer ships an opinion about which terminal/multiplexer the user
+//! wants. The `workspace.ready_to_view` event is the only mechanism; users
+//! drop a hook in `~/.config/bunyan/hooks/workspace.ready_to_view` (see
+//! `examples/hooks/`) to control what happens when a workspace becomes
+//! viewable.
+//!
+//! If no hook is configured, bunyan logs a helpful message and returns Ok.
+//! The workspace is still set up, processes are still running — just nothing
+//! pops open a terminal.
 
-use crate::error::{BunyanError, Result};
+use std::path::PathBuf;
+
+use crate::error::Result;
+use crate::events::names;
 use crate::hooks::{self, DefaultHookRoots, HookContext, HookRoots, HookRunResult};
 use crate::tmux;
 
@@ -10,9 +22,11 @@ use crate::tmux;
 pub enum ViewDispatch {
     /// At least one hook succeeded — the workspace view is already opened.
     HandledByHook,
-    /// No hook ran, or every hook that ran failed. Fall back to the legacy
-    /// iTerm flow. `had_failures` is true if any hook ran but errored.
-    FallBackToIterm { had_failures: bool },
+    /// No hook ran for this event. The workspace is ready but nothing
+    /// surfaced it visually.
+    NoHookConfigured,
+    /// One or more hooks ran but all failed.
+    AllHooksFailed,
 }
 
 fn build_ready_to_view_context(
@@ -24,7 +38,7 @@ fn build_ready_to_view_context(
     branch: Option<&str>,
     repo_root_path: Option<&str>,
 ) -> HookContext {
-    let mut ctx = HookContext::new("workspace.ready_to_view");
+    let mut ctx = HookContext::new(names::WORKSPACE_READY_TO_VIEW);
     ctx.repo_name = Some(repo_name.to_string());
     if let Some(id) = repo_id {
         ctx.repo_id = Some(id.to_string());
@@ -51,20 +65,19 @@ fn build_ready_to_view_context(
 }
 
 /// Decide what to do after firing the `workspace.ready_to_view` hook chain.
-/// Pulled out for testability — the production path wraps this with
-/// `DefaultHookRoots` and the iTerm fallback.
 fn dispatch_from_result(result: &HookRunResult) -> ViewDispatch {
     if result.any_succeeded() {
         ViewDispatch::HandledByHook
+    } else if result.any_ran() {
+        ViewDispatch::AllHooksFailed
     } else {
-        ViewDispatch::FallBackToIterm {
-            had_failures: result.any_ran(),
-        }
+        ViewDispatch::NoHookConfigured
     }
 }
 
 /// Fire `workspace.ready_to_view` hooks against the given roots and return
 /// the dispatch decision. Exposed for tests; callers use `open_workspace_view`.
+#[allow(clippy::too_many_arguments)]
 pub fn fire_ready_to_view(
     roots: &dyn HookRoots,
     repo_name: &str,
@@ -88,11 +101,8 @@ pub fn fire_ready_to_view(
     dispatch_from_result(&result)
 }
 
-/// Try the user's `workspace.ready_to_view` hook first; fall back to the
-/// hardcoded iTerm flow only if no hook ran successfully.
-///
-/// `repo_root_path` is the absolute path of the repo's clone (used to discover
-/// per-repo hooks). Pass `None` if not available.
+/// Fire the user's `workspace.ready_to_view` hook. If no hook is configured,
+/// log a helpful note and return Ok — the workspace is up regardless.
 pub fn open_workspace_view(
     repo_name: &str,
     workspace_name: &str,
@@ -114,100 +124,22 @@ pub fn open_workspace_view(
         repo_root_path,
     );
     match dispatch {
-        ViewDispatch::HandledByHook => Ok(()),
-        ViewDispatch::FallBackToIterm { had_failures } => {
-            if had_failures {
-                eprintln!(
-                    "[bunyan] workspace.ready_to_view hook(s) failed; falling back to iTerm"
-                );
-            }
-            attach_iterm(repo_name, workspace_name)
+        ViewDispatch::HandledByHook => {}
+        ViewDispatch::NoHookConfigured => {
+            let p = workspace_path.unwrap_or("(path unknown)");
+            eprintln!(
+                "[bunyan] no workspace.ready_to_view hook configured; workspace is ready at {} \
+(see examples/hooks/ in the bunyan repo for templates)",
+                p
+            );
+        }
+        ViewDispatch::AllHooksFailed => {
+            eprintln!(
+                "[bunyan] workspace.ready_to_view hook(s) all failed — see logs above"
+            );
         }
     }
-}
-
-/// Attach iTerm to the bunyan tmux session for a repo.
-/// First tries to focus an existing iTerm window already attached to this session.
-/// Only opens a new iTerm window if no existing attachment is found.
-pub fn attach_iterm(repo_name: &str, workspace_name: &str) -> Result<()> {
-    // Select the workspace window before attaching/focusing
-    tmux::select_window(repo_name, workspace_name)?;
-
-    // Try to reuse an existing iTerm window already attached to this repo's session
-    let client_ttys = tmux::list_client_ttys_for_session(repo_name)?;
-    if !client_ttys.is_empty() {
-        if focus_iterm_by_tty(&client_ttys)? {
-            return Ok(());
-        }
-    }
-
-    // No existing attachment — open a new iTerm window
-    let attach_cmd = tmux::attach_command(repo_name);
-    let session_name = format!("Bunyan: {} / {}", repo_name, workspace_name);
-    let script = format!(
-        r#"tell application "iTerm"
-    activate
-    set newWindow to (create window with default profile)
-    tell current session of newWindow
-        set name to "{}"
-        write text "{}"
-    end tell
-end tell"#,
-        session_name, attach_cmd
-    );
-
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| BunyanError::Process(format!("Failed to run osascript: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(BunyanError::Process(format!(
-            "osascript failed: {}",
-            stderr
-        )));
-    }
-
     Ok(())
-}
-
-/// Find an iTerm session whose TTY matches one of the tmux client TTYs,
-/// then focus that window. Returns true if found.
-fn focus_iterm_by_tty(ttys: &[String]) -> Result<bool> {
-    // Build a comma-delimited string of TTYs for matching via AppleScript `contains`
-    let tty_match_str: String = ttys.iter().map(|t| format!("{},", t)).collect();
-
-    let script = format!(
-        r#"tell application "iTerm"
-    set ttyMatch to "{}"
-    repeat with w in windows
-        repeat with t in tabs of w
-            repeat with s in sessions of t
-                if ttyMatch contains ((tty of s) & ",") then
-                    select t
-                    tell w to activate
-                    return "found"
-                end if
-            end repeat
-        end repeat
-    end repeat
-    return "not_found"
-end tell"#,
-        tty_match_str
-    );
-
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| BunyanError::Process(format!("Failed to run osascript: {}", e)))?;
-
-    if !output.status.success() {
-        return Ok(false);
-    }
-
-    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(result == "found")
 }
 
 #[cfg(test)]
@@ -273,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_to_view_falls_back_when_no_hook_present() {
+    fn ready_to_view_no_hook_configured_when_none_present() {
         let tmp = unique_tempdir("rv_none");
         let roots = StaticRoots { user: Some(tmp) };
         let dispatch = fire_ready_to_view(
@@ -286,14 +218,11 @@ mod tests {
             Some("main"),
             None,
         );
-        assert_eq!(
-            dispatch,
-            ViewDispatch::FallBackToIterm { had_failures: false }
-        );
+        assert_eq!(dispatch, ViewDispatch::NoHookConfigured);
     }
 
     #[test]
-    fn ready_to_view_falls_back_when_hook_fails() {
+    fn ready_to_view_reports_all_hooks_failed() {
         let tmp = unique_tempdir("rv_fail");
         write_hook(&tmp.join("workspace.ready_to_view"), "#!/bin/sh\nexit 5\n");
         let roots = StaticRoots { user: Some(tmp) };
@@ -307,10 +236,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            dispatch,
-            ViewDispatch::FallBackToIterm { had_failures: true }
-        );
+        assert_eq!(dispatch, ViewDispatch::AllHooksFailed);
     }
 
     #[test]
@@ -361,5 +287,11 @@ mod tests {
             "expected attach_cmd to contain tmux + repo name, got {:?}",
             content
         );
+    }
+
+    #[test]
+    fn dispatch_from_no_outcomes_is_no_hook_configured() {
+        let result = HookRunResult::default();
+        assert_eq!(dispatch_from_result(&result), ViewDispatch::NoHookConfigured);
     }
 }

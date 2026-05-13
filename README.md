@@ -43,7 +43,7 @@ skills.sh auto-detects installed agents. Pass `-a <agent>` to target a specific 
 - **Container isolation** — Optionally run workspaces inside Docker containers with automatic volume mounts, port forwarding, and per-repo network isolation.
 - **Desktop GUI** — Two-panel interface with a tree sidebar for repos and worktrees and a detail panel showing active panes, port mappings, and session history.
 - **CLI** — Full-featured `bunyan` command for headless and scripted usage. Talks to the same backend as the GUI.
-- **iTerm integration** — Automatically manages iTerm windows (one per repo) with tmux title propagation for easy identification.
+- **Event hooks** — Drop executable scripts in `~/.config/bunyan/hooks/<event>` to react to workspace lifecycle. Replaces the previous hardcoded iTerm window flow. See `examples/hooks/`.
 
 ## Use Cases
 
@@ -57,7 +57,13 @@ skills.sh auto-detects installed agents. Pass `-a <agent>` to target a specific 
 
 Bunyan runs an HTTP server (default port 3333) that both the desktop GUI and CLI connect to. A dedicated tmux server on the `bunyan` socket provides the session backbone — each repo maps to a tmux session, each worktree to a window, and each process (Claude or shell) to a pane. SQLite stores repo and workspace metadata. Git worktrees and cloned repos live on disk under `~/bunyan/`.
 
-Sessions persist independently of the GUI. Closing iTerm or quitting the app doesn't kill running processes — Claude keeps working in the background. Archiving a workspace tears down its tmux window, removes the Git worktree, and (if applicable) stops its Docker container.
+Sessions persist independently of the GUI. Closing your terminal or quitting the app doesn't kill running processes — Claude keeps working in the background. Archiving a workspace tears down its tmux window, removes the Git worktree, and (if applicable) stops its Docker container.
+
+## Hooks
+
+Bunyan publishes lifecycle events (`workspace.created`, `workspace.ready_to_view`, `workspace.archived`, `claude.started`, `claude.resumed`) and runs any executable scripts you've placed at `~/.config/bunyan/hooks/<event>` or `~/bunyan/repos/<repo>/.bunyan/hooks/<event>` when they fire. This is how you wire up "open the workspace in iTerm/zellij/etc," per-worktree bootstrap (`mise install`, `npm install`, …), Slack notifications, and anything else you want bunyan to trigger.
+
+Browse `examples/hooks/` for templates — including a drop-in replacement for the legacy iTerm window flow. See `bunyan hooks list <event>` and `bunyan hooks run <event> --workspace <id>` for debugging.
 
 ## Development
 
@@ -66,7 +72,7 @@ Sessions persist independently of the GUI. Closing iTerm or quitting the app doe
 - **Rust** (stable toolchain) — [rustup.rs](https://rustup.rs)
 - **Node.js 22+** — via [mise](https://mise.jdx.dev), nvm, or direct install
 - **tmux** — `brew install tmux`
-- **iTerm2** — Bunyan uses AppleScript to manage iTerm windows
+- **A terminal multiplexer/launcher** — bunyan no longer pops terminals itself; configure a `workspace.ready_to_view` hook (see `examples/hooks/`) to open iTerm, zellij, ghostty, etc.
 - **Docker** (optional) — required only for container-based workspaces
 
 ### Project Structure

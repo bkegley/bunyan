@@ -60,6 +60,11 @@ enum Command {
         #[command(subcommand)]
         cmd: commands::settings::SettingsCommand,
     },
+    /// Inspect and exercise event hooks
+    Hooks {
+        #[command(subcommand)]
+        cmd: commands::hooks::HooksCommand,
+    },
     /// Check server health and Docker availability
     Status,
     /// Start the bunyan server in the foreground
@@ -113,6 +118,7 @@ fn main() {
                 Command::Pane { cmd: sub } => commands::pane::run(&client, sub, mode),
                 Command::Docker { cmd: sub } => commands::docker::run(&client, sub, mode),
                 Command::Settings { cmd: sub } => commands::settings::run(&client, sub, mode),
+                Command::Hooks { cmd: sub } => commands::hooks::run(&client, sub, mode),
                 Command::Status => run_status(&client, mode),
                 Command::Serve { .. } | Command::Up { .. } | Command::Down => unreachable!(),
             }

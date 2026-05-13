@@ -7,7 +7,6 @@ use crate::error::{BunyanError, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Editor {
-    Iterm,
     Vscode,
     Cursor,
     Zed,
@@ -19,7 +18,6 @@ impl Editor {
     /// The CLI binary name used to open this editor.
     pub fn cli_name(&self) -> &str {
         match self {
-            Editor::Iterm => "iterm",
             Editor::Vscode => "code",
             Editor::Cursor => "cursor",
             Editor::Zed => "zed",
@@ -31,7 +29,6 @@ impl Editor {
     /// Human-readable display name.
     pub fn display_name(&self) -> &str {
         match self {
-            Editor::Iterm => "iTerm",
             Editor::Vscode => "VS Code",
             Editor::Cursor => "Cursor",
             Editor::Zed => "Zed",
@@ -43,7 +40,6 @@ impl Editor {
     /// Stable string identifier used for settings persistence.
     pub fn id(&self) -> &str {
         match self {
-            Editor::Iterm => "iterm",
             Editor::Vscode => "vscode",
             Editor::Cursor => "cursor",
             Editor::Zed => "zed",
@@ -55,7 +51,6 @@ impl Editor {
     /// Parse an editor from its string ID.
     pub fn from_id(id: &str) -> Option<Editor> {
         match id {
-            "iterm" => Some(Editor::Iterm),
             "vscode" => Some(Editor::Vscode),
             "cursor" => Some(Editor::Cursor),
             "zed" => Some(Editor::Zed),
@@ -65,7 +60,7 @@ impl Editor {
         }
     }
 
-    /// All non-iTerm editors that can be detected.
+    /// All editors that can be detected.
     fn detectable() -> &'static [Editor] {
         &[
             Editor::Vscode,
@@ -86,9 +81,12 @@ fn is_cli_available(cli: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Detect which editors are installed. Always includes iTerm as the first entry.
+/// Detect which editors are installed.
+///
+/// Terminal/multiplexer attachment is no longer an "editor" — that flows
+/// through the `workspace.ready_to_view` hook instead.
 pub fn detect_installed_editors() -> Vec<Editor> {
-    let mut editors = vec![Editor::Iterm];
+    let mut editors = Vec::new();
     for editor in Editor::detectable() {
         if is_cli_available(editor.cli_name()) {
             editors.push(editor.clone());
@@ -98,12 +96,7 @@ pub fn detect_installed_editors() -> Vec<Editor> {
 }
 
 /// Open a workspace folder in the given editor.
-/// For iTerm, this is a no-op (handled separately by terminal::attach_iterm).
 pub fn open_in_editor(editor: &Editor, workspace_path: &str) -> Result<()> {
-    if *editor == Editor::Iterm {
-        return Ok(());
-    }
-
     let cli = editor.cli_name();
     let output = Command::new(cli)
         .arg(workspace_path)

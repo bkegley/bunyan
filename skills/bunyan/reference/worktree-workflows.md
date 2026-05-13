@@ -63,7 +63,9 @@ curl -s -X POST http://127.0.0.1:3333/workspaces/<ID>/archive
 
 ## View a Workspace
 
-Focus the workspace in iTerm (creates tmux window if needed):
+Fire the `workspace.ready_to_view` hook to surface the workspace in whatever
+terminal/multiplexer the user has configured. If no hook is wired up, the
+workspace is still ready — bunyan just doesn't pop a window:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3333/workspaces/<ID>/view

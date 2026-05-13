@@ -23,3 +23,6 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"], optional = true }
 utoipa = { version = "5", features = ["axum_extras"], optional = true }
 utoipa-axum = { version = "0.2", optional = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -41,6 +41,8 @@ use crate::state::AppState;
         routes::settings::list,
         routes::settings::get,
         routes::settings::set,
+        routes::hooks::list,
+        routes::hooks::run,
     ),
     components(schemas(
         models::Repo,
@@ -64,6 +66,10 @@ use crate::state::AppState;
         models::SetSettingInput,
         models::SystemInfo,
         models::ErrorResponse,
+        routes::hooks::HookListResponse,
+        routes::hooks::HookOutcomeJson,
+        routes::hooks::RunInput,
+        routes::hooks::RunResponse,
     )),
     tags(
         (name = "health", description = "Health check"),
@@ -74,6 +80,7 @@ use crate::state::AppState;
         (name = "editors", description = "Editor detection and launch"),
         (name = "settings", description = "App settings"),
         (name = "system", description = "System information"),
+        (name = "hooks", description = "Hook discovery and execution"),
     )
 )]
 struct ApiDoc;
@@ -147,6 +154,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/settings", get(routes::settings::list))
         .route("/settings/{key}", get(routes::settings::get))
         .route("/settings/{key}", put(routes::settings::set))
+        // Hooks
+        .route("/hooks", get(routes::hooks::list))
+        .route("/hooks/run", post(routes::hooks::run))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
