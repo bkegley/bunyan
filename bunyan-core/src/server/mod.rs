@@ -46,6 +46,7 @@ use crate::state::AppState;
         routes::delegate::delegate,
         routes::workspaces::diff,
         routes::workspaces::result,
+        routes::agent_events::agent_events,
     ),
     components(schemas(
         models::Repo,
@@ -168,6 +169,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Observation
         .route("/workspaces/{id}/diff", get(routes::workspaces::diff))
         .route("/workspaces/{id}/result", get(routes::workspaces::result))
+        // Agent event ingress (from injected Claude hooks)
+        .route(
+            "/workspaces/{id}/agent-events",
+            post(routes::agent_events::agent_events),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

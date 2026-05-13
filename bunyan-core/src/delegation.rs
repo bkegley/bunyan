@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::claude_settings;
 use crate::db;
 use crate::error::{BunyanError, Result};
 use crate::events::{self, names};
@@ -99,7 +100,21 @@ pub async fn delegate(
         )?
     };
 
-    // 4. Fire workspace.created so per-repo bootstrap hooks can install deps,
+    // 4. Inject bunyan-aware Claude hooks into the new worktree. The spawned
+    //    Claude will report back to bunyan at Stop/SubagentStop/Notification/
+    //    SessionStart without its prompt knowing anything about bunyan.
+    {
+        let wt = std::path::PathBuf::from(&wt_path);
+        let ws_id = ws.id.clone();
+        let port = parse_port(&server_origin.to_string()).unwrap_or(3333);
+        tokio::task::spawn_blocking(move || {
+            claude_settings::write_session_settings(&wt, &ws_id, port)
+        })
+        .await
+        .map_err(|e| BunyanError::Process(e.to_string()))??;
+    }
+
+    // 5. Fire workspace.created so per-repo bootstrap hooks can install deps,
     //    seed .env, etc. We block on this — a delegated agent needs the env
     //    bootstrapped before it starts.
     {
@@ -158,6 +173,16 @@ pub async fn delegate(
     })
 }
 
+/// Extract the port out of an origin URL like "http://127.0.0.1:3333".
+/// Returns None if the URL doesn't carry a port (e.g. bare "http://host").
+fn parse_port(origin: &str) -> Option<u16> {
+    let after_scheme = origin.split("://").nth(1)?;
+    // strip trailing path or query
+    let host_port = after_scheme.split(['/', '?']).next()?;
+    let port_str = host_port.rsplit(':').next()?;
+    port_str.parse().ok()
+}
+
 /// Build the `claude` shell invocation for a delegated prompt.
 ///
 /// Uses `claude -p` (print mode) so the prompt is the first user turn and
@@ -195,5 +220,13 @@ mod tests {
     fn build_claude_command_handles_multiline() {
         let cmd = build_claude_command("line1\nline2");
         assert_eq!(cmd, "claude 'line1\nline2'");
+    }
+
+    #[test]
+    fn parse_port_handles_common_origins() {
+        assert_eq!(parse_port("http://127.0.0.1:3333"), Some(3333));
+        assert_eq!(parse_port("http://localhost:9999/"), Some(9999));
+        assert_eq!(parse_port("https://example.com:8443/path"), Some(8443));
+        assert_eq!(parse_port("http://no-port-here"), None);
     }
 }

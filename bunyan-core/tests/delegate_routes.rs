@@ -215,6 +215,77 @@ async fn post_delegate_creates_worktree_and_returns_observation_url() {
 }
 
 #[tokio::test]
+async fn post_delegate_injects_settings_local_json_with_bunyan_hooks() {
+    let root = unique_tempdir("delegate_settings");
+    let repos_dir = root.join("repos");
+    let workspaces_dir = root.join("workspaces");
+    fs::create_dir_all(&repos_dir).unwrap();
+    fs::create_dir_all(&workspaces_dir).unwrap();
+    let repo_path = repos_dir.join("myrepo");
+    init_git_repo(&repo_path);
+
+    let (state, _) = make_state_with_fake_backend();
+    state.set_server_origin("http://127.0.0.1:7654");
+    {
+        let conn = state.db.lock().unwrap();
+        db::repos::create(
+            &conn,
+            CreateRepoInput {
+                name: "myrepo".into(),
+                remote_url: "u".into(),
+                root_path: repo_path.display().to_string(),
+                default_branch: "main".into(),
+                remote: "origin".into(),
+                display_order: 0,
+                config: None,
+            },
+        )
+        .unwrap();
+    }
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/delegate")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "repo": "myrepo",
+                        "branch": "side",
+                        "prompt": "go"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let ws_id = body["workspace_id"].as_str().unwrap();
+
+    let settings_path = workspaces_dir
+        .join("myrepo")
+        .join("side")
+        .join(".claude/settings.local.json");
+    assert!(
+        settings_path.exists(),
+        "expected {} to exist",
+        settings_path.display()
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+    let stop_cmd = body["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(stop_cmd.contains(ws_id));
+    assert!(stop_cmd.contains(":7654"));
+    assert!(stop_cmd.contains("/agent-events"));
+}
+
+#[tokio::test]
 async fn post_delegate_records_parent_workspace_id_when_from_set() {
     let root = unique_tempdir("delegate_from");
     let repos_dir = root.join("repos");

@@ -20,10 +20,19 @@ A hook returning **exit code 78** short-circuits the rest for that event.
 | Event | When it fires | Notable extras |
 | --- | --- | --- |
 | `workspace.created` | After worktree + DB + container are set up | — |
-| `workspace.ready_to_view` | Whenever a workspace should be surfaced to the user | `attach_cmd` (the runtime's attach command) |
+| `workspace.ready_to_view` | Whenever a workspace should be surfaced to the user | `attach_cmd` (the runtime's attach command), `backend` |
 | `workspace.archived` | Before tear-down | — |
 | `claude.started` | After a new Claude pane is created | — |
 | `claude.resumed` | After resuming an existing Claude session | `session_id` |
+| `claude.stopped` | Spawned Claude finished a turn (Stop hook) | `claude_event`, `payload` (raw Claude hook JSON) |
+| `claude.subagent_stopped` | Sub-agent (Task) finished | `claude_event`, `payload` |
+| `claude.notification` | Claude is waiting / timed out | `claude_event`, `payload` |
+| `claude.session_started` | Claude opened a new session | `claude_event`, `payload` |
+
+> The `claude.*` events at the bottom of the table are re-fired by bunyan
+> when a delegated Claude reports back via its injected
+> `.claude/settings.local.json` hooks. They mirror Claude Code's hook
+> events but are namespaced into bunyan's convention.
 
 ## Context bunyan passes to a hook
 

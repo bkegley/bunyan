@@ -64,6 +64,12 @@ curl -s http://127.0.0.1:3333/workspaces/<id>/diff
 - `200` + JSON when `result.json` exists at the worktree root.
 - `204 No Content` if the spawned agent hasn't written results yet.
 
+Bunyan auto-populates `result.json` when the spawned Claude's `Stop` or
+`SubagentStop` hook fires (via the `settings.local.json` it injected at
+spawn time). So even if a delegated agent never explicitly writes a result,
+something useful lives at `/result` after the session finishes its first
+turn.
+
 ## Process and session state
 
 ```bash

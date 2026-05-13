@@ -8,3 +8,4 @@ pub mod editors;
 pub mod system;
 pub mod hooks;
 pub mod delegate;
+pub mod agent_events;
