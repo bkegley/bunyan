@@ -3,7 +3,7 @@ pub mod error;
 pub mod state;
 pub mod db;
 pub mod git;
-pub mod tmux;
+pub mod backends;
 pub mod terminal;
 pub mod editor;
 pub mod docker;
@@ -33,4 +33,13 @@ pub fn init_state() -> Arc<state::AppState> {
     let conn = Connection::open(&db_path).expect("Failed to open database");
     db::initialize_database(&conn).expect("Failed to initialize database schema");
     Arc::new(state::AppState::new(conn))
+}
+
+pub fn init_state_with_backend(
+    backend: Arc<dyn backends::RuntimeBackend>,
+) -> Arc<state::AppState> {
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path).expect("Failed to open database");
+    db::initialize_database(&conn).expect("Failed to initialize database schema");
+    Arc::new(state::AppState::with_backend(conn, backend))
 }

@@ -16,7 +16,6 @@ use crate::server::error::ApiError;
 use crate::sessions;
 use crate::state::AppState;
 use crate::terminal;
-use crate::tmux;
 use crate::workspace;
 
 #[derive(Deserialize)]
@@ -24,13 +23,15 @@ pub struct ListQuery {
     pub repo_id: Option<String>,
 }
 
-/// Open the workspace view: try the user's `workspace.ready_to_view` hook,
-/// fall back to iTerm otherwise.
+/// Open the workspace view: fire `workspace.ready_to_view` and let the
+/// configured hook surface the workspace.
 async fn view_workspace(
+    state: &Arc<AppState>,
     ws: &Workspace,
     repo: &crate::models::Repo,
     ws_path: &str,
 ) -> Result<(), ApiError> {
+    let backend = state.backend.clone();
     let rn = repo.name.clone();
     let wn = ws.directory_name.clone();
     let wp = ws_path.to_string();
@@ -40,6 +41,7 @@ async fn view_workspace(
     let root = repo.root_path.clone();
     tokio::task::spawn_blocking(move || {
         terminal::open_workspace_view(
+            backend.as_ref(),
             &rn,
             &wn,
             Some(&wp),
@@ -156,7 +158,7 @@ pub async fn archive(
     .await
     .ok();
 
-    workspace::kill_workspace_window(&repo.name, &ws.directory_name);
+    workspace::kill_workspace_window(state.backend.as_ref(), &repo.name, &ws.directory_name);
 
     if ws.container_mode == ContainerMode::Container {
         if let Some(ref container_id) = ws.container_id {
@@ -225,11 +227,15 @@ pub async fn get_panes(
     let repo_name = repo.name;
     let ws_name = ws.directory_name;
 
-    let panes = tokio::task::spawn_blocking(move || tmux::list_panes(&repo_name, &ws_name))
-        .await
-        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-        .map_err(ApiError)?;
+    let backend = state.backend.clone();
+    let processes = tokio::task::spawn_blocking(move || {
+        backend.list_processes(&repo_name, &ws_name)
+    })
+    .await
+    .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+    .map_err(ApiError)?;
 
+    let panes: Vec<TmuxPane> = processes.iter().map(|p| p.to_pane()).collect();
     Ok(Json(panes))
 }
 
@@ -247,17 +253,18 @@ pub async fn start_claude(
     let ws_name = ws.directory_name.clone();
     let ws_path_clone = ws_path.clone();
 
-    let has_claude = tokio::task::spawn_blocking({
+    let has_claude = {
+        let backend = state.backend.clone();
         let rn = repo_name.clone();
         let wn = ws_name.clone();
-        move || tmux::has_claude_running(&rn, &wn)
-    })
-    .await
-    .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-    .map_err(ApiError)?;
+        tokio::task::spawn_blocking(move || backend.has_claude_running(&rn, &wn))
+            .await
+            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+            .map_err(ApiError)?
+    };
 
     if has_claude {
-        view_workspace(&ws, &repo, &ws_path).await?;
+        view_workspace(&state, &ws, &repo, &ws_path).await?;
         return Ok(Json(StatusResponse { status: "attached".into() }));
     }
 
@@ -288,14 +295,17 @@ pub async fn start_claude(
         base_cmd
     };
 
-    let rn = repo_name.clone();
-    let wn = ws_name.clone();
-    let wp = ws_path_clone.clone();
-    let cmd = claude_cmd.clone();
-    tokio::task::spawn_blocking(move || tmux::create_pane(&rn, &wn, &wp, &cmd))
-        .await
-        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-        .map_err(ApiError)?;
+    {
+        let backend = state.backend.clone();
+        let rn = repo_name.clone();
+        let wn = ws_name.clone();
+        let wp = ws_path_clone.clone();
+        let cmd = claude_cmd.clone();
+        tokio::task::spawn_blocking(move || backend.spawn(&rn, &wn, &wp, &cmd))
+            .await
+            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+            .map_err(ApiError)?;
+    }
 
     {
         let ws_clone = ws.clone();
@@ -313,7 +323,7 @@ pub async fn start_claude(
         .ok();
     }
 
-    view_workspace(&ws, &repo, &ws_path).await?;
+    view_workspace(&state, &ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "created".into() }))
 }
@@ -336,17 +346,20 @@ pub async fn resume_claude(
     let ws_name = ws.directory_name.clone();
 
     let existing = {
+        let backend = state.backend.clone();
         let rn = repo_name.clone();
         let wn = ws_name.clone();
         let sid = input.session_id.clone();
-        tokio::task::spawn_blocking(move || tmux::find_pane_with_session(&rn, &wn, &sid))
-            .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-            .map_err(ApiError)?
+        tokio::task::spawn_blocking(move || {
+            backend.find_slot_running_session(&rn, &wn, &sid)
+        })
+        .await
+        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+        .map_err(ApiError)?
     };
 
     if existing.is_some() {
-        view_workspace(&ws, &repo, &ws_path).await?;
+        view_workspace(&state, &ws, &repo, &ws_path).await?;
         return Ok(Json(StatusResponse { status: "attached".into() }));
     }
 
@@ -366,28 +379,31 @@ pub async fn resume_claude(
     };
 
     let idle = {
+        let backend = state.backend.clone();
         let rn = repo_name.clone();
         let wn = ws_name.clone();
-        tokio::task::spawn_blocking(move || tmux::find_idle_pane(&rn, &wn))
+        tokio::task::spawn_blocking(move || backend.find_idle_slot(&rn, &wn))
             .await
             .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
             .map_err(ApiError)?
     };
 
-    if let Some(pane_index) = idle {
+    if let Some(slot_index) = idle {
+        let backend = state.backend.clone();
         let rn = repo_name.clone();
         let wn = ws_name.clone();
         let cmd = claude_cmd.clone();
-        tokio::task::spawn_blocking(move || tmux::send_to_pane(&rn, &wn, pane_index, &cmd))
+        tokio::task::spawn_blocking(move || backend.send_to_slot(&rn, &wn, slot_index, &cmd))
             .await
             .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
             .map_err(ApiError)?;
     } else {
+        let backend = state.backend.clone();
         let rn = repo_name.clone();
         let wn = ws_name.clone();
         let wp = ws_path.clone();
         let cmd = claude_cmd.clone();
-        tokio::task::spawn_blocking(move || tmux::create_pane(&rn, &wn, &wp, &cmd))
+        tokio::task::spawn_blocking(move || backend.spawn(&rn, &wn, &wp, &cmd))
             .await
             .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
             .map_err(ApiError)?;
@@ -411,7 +427,7 @@ pub async fn resume_claude(
         .ok();
     }
 
-    view_workspace(&ws, &repo, &ws_path).await?;
+    view_workspace(&state, &ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "resumed".into() }))
 }
@@ -439,40 +455,22 @@ pub async fn open_shell(
         None
     };
 
-    let rn = repo_name.clone();
-    let wn = ws_name.clone();
-    let wp = ws_path.clone();
-    tokio::task::spawn_blocking(move || {
-        tmux::ensure_workspace_window(&rn, &wn, &wp)?;
-        let target = format!("{}:{}", rn, wn);
-        let mut args = vec![
-            "-L", "bunyan", "split-window", "-h", "-t", &target, "-c", &wp,
-        ];
-        let cmd_ref;
-        if let Some(ref cmd) = shell_cmd {
-            cmd_ref = cmd.as_str();
-            args.push(cmd_ref);
-        }
-        let output = std::process::Command::new("tmux")
-            .args(&args)
-            .output()
-            .map_err(|e| {
-                crate::error::BunyanError::Process(format!("Failed to split window: {}", e))
-            })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(crate::error::BunyanError::Process(format!(
-                "tmux split-window failed: {}",
-                stderr
-            )));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-    .map_err(ApiError)?;
+    // For container workspaces we run docker exec ... /bin/bash as the
+    // spawned command; for local workspaces we hand the backend an empty
+    // string, which the tmux backend interprets as "default shell."
+    let cmd = shell_cmd.unwrap_or_default();
+    {
+        let backend = state.backend.clone();
+        let rn = repo_name.clone();
+        let wn = ws_name.clone();
+        let wp = ws_path.clone();
+        tokio::task::spawn_blocking(move || backend.spawn(&rn, &wn, &wp, &cmd))
+            .await
+            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+            .map_err(ApiError)?;
+    }
 
-    view_workspace(&ws, &repo, &ws_path).await?;
+    view_workspace(&state, &ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "created".into() }))
 }
@@ -487,15 +485,16 @@ pub async fn view(
         workspace::resolve_workspace_path(&conn, &id)?
     };
 
+    let backend = state.backend.clone();
     let rn = repo.name.clone();
     let wn = ws.directory_name.clone();
     let wp = ws_path.clone();
-    tokio::task::spawn_blocking(move || tmux::ensure_workspace_window(&rn, &wn, &wp))
+    tokio::task::spawn_blocking(move || backend.ensure_workspace(&rn, &wn, &wp))
         .await
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    view_workspace(&ws, &repo, &ws_path).await?;
+    view_workspace(&state, &ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "attached".into() }))
 }
@@ -510,9 +509,10 @@ pub async fn kill_pane_handler(
         workspace::resolve_workspace_path(&conn, &id)?
     };
 
+    let backend = state.backend.clone();
     let rn = repo.name;
     let wn = ws.directory_name;
-    tokio::task::spawn_blocking(move || tmux::kill_pane(&rn, &wn, pane_index))
+    tokio::task::spawn_blocking(move || backend.kill_slot(&rn, &wn, pane_index))
         .await
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;

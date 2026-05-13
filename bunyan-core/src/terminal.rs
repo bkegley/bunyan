@@ -12,10 +12,10 @@
 
 use std::path::PathBuf;
 
+use crate::backends::RuntimeBackend;
 use crate::error::Result;
 use crate::events::names;
 use crate::hooks::{self, DefaultHookRoots, HookContext, HookRoots, HookRunResult};
-use crate::tmux;
 
 /// What the hook layer decided we should do next.
 #[derive(Debug, PartialEq)]
@@ -29,7 +29,9 @@ pub enum ViewDispatch {
     AllHooksFailed,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_ready_to_view_context(
+    backend: &dyn RuntimeBackend,
     repo_name: &str,
     workspace_name: &str,
     workspace_path: Option<&str>,
@@ -56,11 +58,13 @@ fn build_ready_to_view_context(
     if let Some(p) = repo_root_path {
         ctx.repo_root_path = Some(p.to_string());
     }
-    // Expose the tmux attach command as an event extra so hooks can be
-    // backend-agnostic. Today the runtime is always tmux; the v2 refactor
-    // will replace this with whatever the active backend reports.
+    // Expose the backend's attach command as an event extra so hooks stay
+    // backend-agnostic. A tmux backend gives `tmux -L bunyan attach -t <repo>`;
+    // a zellij backend would give `zellij attach <session>`; etc.
     ctx.extras
-        .insert("attach_cmd".into(), tmux::attach_command(repo_name));
+        .insert("attach_cmd".into(), backend.attach_command(repo_name));
+    ctx.extras
+        .insert("backend".into(), backend.name().to_string());
     ctx
 }
 
@@ -79,6 +83,7 @@ fn dispatch_from_result(result: &HookRunResult) -> ViewDispatch {
 /// the dispatch decision. Exposed for tests; callers use `open_workspace_view`.
 #[allow(clippy::too_many_arguments)]
 pub fn fire_ready_to_view(
+    backend: &dyn RuntimeBackend,
     roots: &dyn HookRoots,
     repo_name: &str,
     workspace_name: &str,
@@ -89,6 +94,7 @@ pub fn fire_ready_to_view(
     repo_root_path: Option<&str>,
 ) -> ViewDispatch {
     let ctx = build_ready_to_view_context(
+        backend,
         repo_name,
         workspace_name,
         workspace_path,
@@ -103,7 +109,9 @@ pub fn fire_ready_to_view(
 
 /// Fire the user's `workspace.ready_to_view` hook. If no hook is configured,
 /// log a helpful note and return Ok — the workspace is up regardless.
+#[allow(clippy::too_many_arguments)]
 pub fn open_workspace_view(
+    backend: &dyn RuntimeBackend,
     repo_name: &str,
     workspace_name: &str,
     workspace_path: Option<&str>,
@@ -114,6 +122,7 @@ pub fn open_workspace_view(
 ) -> Result<()> {
     let roots = DefaultHookRoots::new(repo_root_path.map(PathBuf::from));
     let dispatch = fire_ready_to_view(
+        backend,
         &roots,
         repo_name,
         workspace_name,
@@ -145,6 +154,7 @@ pub fn open_workspace_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backends::tmux::TmuxBackend;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -159,6 +169,10 @@ mod tests {
         fn repo_root(&self, _: &str) -> Option<PathBuf> {
             None
         }
+    }
+
+    fn backend() -> TmuxBackend {
+        TmuxBackend::new()
     }
 
     fn unique_tempdir(label: &str) -> PathBuf {
@@ -192,6 +206,7 @@ mod tests {
         write_hook(&tmp.join("workspace.ready_to_view"), "#!/bin/sh\nexit 0\n");
         let roots = StaticRoots { user: Some(tmp) };
         let dispatch = fire_ready_to_view(
+            &backend(),
             &roots,
             "frontend",
             "ws-1",
@@ -209,6 +224,7 @@ mod tests {
         let tmp = unique_tempdir("rv_none");
         let roots = StaticRoots { user: Some(tmp) };
         let dispatch = fire_ready_to_view(
+            &backend(),
             &roots,
             "frontend",
             "ws-1",
@@ -227,6 +243,7 @@ mod tests {
         write_hook(&tmp.join("workspace.ready_to_view"), "#!/bin/sh\nexit 5\n");
         let roots = StaticRoots { user: Some(tmp) };
         let dispatch = fire_ready_to_view(
+            &backend(),
             &roots,
             "frontend",
             "ws-1",
@@ -245,6 +262,7 @@ mod tests {
         write_hook(&tmp.join("workspace.ready_to_view"), "#!/bin/sh\nexit 78\n");
         let roots = StaticRoots { user: Some(tmp) };
         let dispatch = fire_ready_to_view(
+            &backend(),
             &roots,
             "frontend",
             "ws-1",
@@ -270,6 +288,7 @@ mod tests {
             user: Some(tmp.clone()),
         };
         let dispatch = fire_ready_to_view(
+            &backend(),
             &roots,
             "myrepo",
             "ws-1",

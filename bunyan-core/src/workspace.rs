@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 
+use crate::backends::RuntimeBackend;
 use crate::db;
 use crate::docker;
 use crate::error::{BunyanError, Result};
 use crate::models::{ContainerConfig, Repo, Workspace};
 use crate::state::AppState;
-use crate::tmux;
 
 /// Derive the workspace filesystem path from a repo's root path.
 /// ~/bunyan/repos/<name> -> ~/bunyan/workspaces/<name>/<dir_name>
@@ -38,9 +38,13 @@ pub fn resolve_workspace_path(
     Ok((ws, rp, ws_path))
 }
 
-/// Kill the entire tmux window for a workspace (used before archiving).
-pub fn kill_workspace_window(repo_name: &str, workspace_name: &str) {
-    let _ = tmux::kill_window(repo_name, workspace_name);
+/// Kill the entire backend container for a workspace (used before archiving).
+pub fn kill_workspace_window(
+    backend: &dyn RuntimeBackend,
+    repo_name: &str,
+    workspace_name: &str,
+) {
+    let _ = backend.kill_workspace(repo_name, workspace_name);
 }
 
 /// Extract container config from a repo's JSON config blob.
