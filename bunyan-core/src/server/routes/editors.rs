@@ -47,10 +47,25 @@ pub async fn open(
 
         let rn = repo.name.clone();
         let wn = ws.directory_name.clone();
-        tokio::task::spawn_blocking(move || crate::terminal::attach_iterm(&rn, &wn))
-            .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-            .map_err(ApiError)?;
+        let wp = ws_path.clone();
+        let wid = ws.id.clone();
+        let rid = repo.id.clone();
+        let branch = ws.branch.clone();
+        let root = repo.root_path.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::terminal::open_workspace_view(
+                &rn,
+                &wn,
+                Some(&wp),
+                Some(&wid),
+                Some(&rid),
+                Some(&branch),
+                Some(&root),
+            )
+        })
+        .await
+        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+        .map_err(ApiError)?;
     } else {
         let wp = ws_path.clone();
         tokio::task::spawn_blocking(move || editor::open_in_editor(&ed, &wp))

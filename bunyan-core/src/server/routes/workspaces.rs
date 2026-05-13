@@ -23,6 +23,36 @@ pub struct ListQuery {
     pub repo_id: Option<String>,
 }
 
+/// Open the workspace view: try the user's `workspace.ready_to_view` hook,
+/// fall back to iTerm otherwise.
+async fn view_workspace(
+    ws: &Workspace,
+    repo: &crate::models::Repo,
+    ws_path: &str,
+) -> Result<(), ApiError> {
+    let rn = repo.name.clone();
+    let wn = ws.directory_name.clone();
+    let wp = ws_path.to_string();
+    let wid = ws.id.clone();
+    let rid = repo.id.clone();
+    let branch = ws.branch.clone();
+    let root = repo.root_path.clone();
+    tokio::task::spawn_blocking(move || {
+        terminal::open_workspace_view(
+            &rn,
+            &wn,
+            Some(&wp),
+            Some(&wid),
+            Some(&rid),
+            Some(&branch),
+            Some(&root),
+        )
+    })
+    .await
+    .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+    .map_err(ApiError)
+}
+
 #[utoipa::path(get, path = "/workspaces", params(("repo_id" = Option<String>, Query, description = "Filter by repository ID")), responses((status = 200, body = Vec<Workspace>), (status = 500, body = ErrorResponse)), operation_id = "list_workspaces", tag = "workspaces")]
 pub async fn list(
     State(state): State<Arc<AppState>>,
@@ -194,12 +224,7 @@ pub async fn start_claude(
     .map_err(ApiError)?;
 
     if has_claude {
-        let rn = repo_name.clone();
-        let wn = ws_name.clone();
-        tokio::task::spawn_blocking(move || terminal::attach_iterm(&rn, &wn))
-            .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-            .map_err(ApiError)?;
+        view_workspace(&ws, &repo, &ws_path).await?;
         return Ok(Json(StatusResponse { status: "attached".into() }));
     }
 
@@ -239,12 +264,7 @@ pub async fn start_claude(
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    let rn = repo_name.clone();
-    let wn = ws_name.clone();
-    tokio::task::spawn_blocking(move || terminal::attach_iterm(&rn, &wn))
-        .await
-        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-        .map_err(ApiError)?;
+    view_workspace(&ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "created".into() }))
 }
@@ -277,12 +297,7 @@ pub async fn resume_claude(
     };
 
     if existing.is_some() {
-        let rn = repo_name.clone();
-        let wn = ws_name.clone();
-        tokio::task::spawn_blocking(move || terminal::attach_iterm(&rn, &wn))
-            .await
-            .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-            .map_err(ApiError)?;
+        view_workspace(&ws, &repo, &ws_path).await?;
         return Ok(Json(StatusResponse { status: "attached".into() }));
     }
 
@@ -329,12 +344,7 @@ pub async fn resume_claude(
             .map_err(ApiError)?;
     }
 
-    let rn = repo_name.clone();
-    let wn = ws_name.clone();
-    tokio::task::spawn_blocking(move || terminal::attach_iterm(&rn, &wn))
-        .await
-        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-        .map_err(ApiError)?;
+    view_workspace(&ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "resumed".into() }))
 }
@@ -395,12 +405,7 @@ pub async fn open_shell(
     .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
     .map_err(ApiError)?;
 
-    let rn = repo_name.clone();
-    let wn = ws_name.clone();
-    tokio::task::spawn_blocking(move || terminal::attach_iterm(&rn, &wn))
-        .await
-        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-        .map_err(ApiError)?;
+    view_workspace(&ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "created".into() }))
 }
@@ -417,18 +422,13 @@ pub async fn view(
 
     let rn = repo.name.clone();
     let wn = ws.directory_name.clone();
-    let wp = ws_path;
+    let wp = ws_path.clone();
     tokio::task::spawn_blocking(move || tmux::ensure_workspace_window(&rn, &wn, &wp))
         .await
         .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
         .map_err(ApiError)?;
 
-    let rn = repo.name.clone();
-    let wn = ws.directory_name.clone();
-    tokio::task::spawn_blocking(move || terminal::attach_iterm(&rn, &wn))
-        .await
-        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
-        .map_err(ApiError)?;
+    view_workspace(&ws, &repo, &ws_path).await?;
 
     Ok(Json(StatusResponse { status: "attached".into() }))
 }
