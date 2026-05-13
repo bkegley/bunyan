@@ -9,6 +9,7 @@
 //! `tmux::*` are no longer allowed.
 
 pub mod tmux;
+pub mod zellij;
 
 use std::sync::Arc;
 
@@ -177,6 +178,93 @@ pub fn default_backend() -> Arc<dyn RuntimeBackend> {
     Arc::new(tmux::TmuxBackend::new())
 }
 
+/// Construct a backend by its name string. Returns `None` for unknown names
+/// so the caller can fall back to the default.
+pub fn backend_by_name(name: &str) -> Option<Arc<dyn RuntimeBackend>> {
+    match name {
+        "tmux" => Some(Arc::new(tmux::TmuxBackend::new())),
+        "zellij" => Some(Arc::new(zellij::ZellijBackend::new())),
+        _ => None,
+    }
+}
+
+/// Resolve which backend to use based on bunyan's user config and the repo
+/// the caller is asking about. Repo-level config overrides the top-level
+/// `[runtime].backend` setting.
+///
+/// `config_dir` is typically `~/.config/bunyan`; `repo_name` is the
+/// optional repo we're resolving for.
+pub fn resolve_backend(
+    config_dir: Option<&std::path::Path>,
+    repo_name: Option<&str>,
+) -> Arc<dyn RuntimeBackend> {
+    let name = config_dir
+        .and_then(|dir| read_backend_from_config(dir, repo_name))
+        .unwrap_or_else(|| "tmux".to_string());
+    backend_by_name(&name).unwrap_or_else(default_backend)
+}
+
+fn read_backend_from_config(
+    config_dir: &std::path::Path,
+    repo_name: Option<&str>,
+) -> Option<String> {
+    let config_path = config_dir.join("config.toml");
+    let body = std::fs::read_to_string(&config_path).ok()?;
+    parse_backend_choice(&body, repo_name)
+}
+
+/// Parse a minimal subset of bunyan's config.toml — enough to find the
+/// `[runtime] backend = "..."` line and the per-repo override
+/// `[runtime.repos.<name>] backend = "..."`. Avoids pulling in a full TOML
+/// dependency; bunyan-core's only TOML use is this lookup.
+fn parse_backend_choice(toml_body: &str, repo_name: Option<&str>) -> Option<String> {
+    let mut top_level: Option<String> = None;
+    let mut current_section = String::new();
+    let mut by_repo: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for raw_line in toml_body.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current_section = rest.trim().to_string();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        // Strip inline `# ...` comments, then surrounding quotes.
+        let value = value
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        if key != "backend" {
+            continue;
+        }
+        match current_section.as_str() {
+            "runtime" => top_level = Some(value),
+            section if section.starts_with("runtime.repos.") => {
+                let name = section.trim_start_matches("runtime.repos.").to_string();
+                by_repo.insert(name, value);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(name) = repo_name {
+        if let Some(per_repo) = by_repo.get(name) {
+            return Some(per_repo.clone());
+        }
+    }
+    top_level
+}
+
 const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh"];
 
 pub fn is_shell(cmd: &str) -> bool {
@@ -215,6 +303,65 @@ fn extract_session_id_from_pid(pid: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_backend_choice_returns_top_level() {
+        let body = r#"
+            [runtime]
+            backend = "zellij"
+        "#;
+        assert_eq!(
+            parse_backend_choice(body, None),
+            Some("zellij".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_backend_choice_per_repo_overrides_top_level() {
+        let body = r#"
+            [runtime]
+            backend = "tmux"
+
+            [runtime.repos.bunyan]
+            backend = "zellij"
+        "#;
+        assert_eq!(
+            parse_backend_choice(body, Some("bunyan")),
+            Some("zellij".to_string())
+        );
+        assert_eq!(
+            parse_backend_choice(body, Some("other")),
+            Some("tmux".to_string())
+        );
+        assert_eq!(parse_backend_choice(body, None), Some("tmux".to_string()));
+    }
+
+    #[test]
+    fn parse_backend_choice_ignores_unrelated_sections_and_comments() {
+        let body = r#"
+            # comment
+            [server]
+            port = 3333
+
+            [runtime]
+            backend = "tmux"  # default for now
+        "#;
+        assert_eq!(parse_backend_choice(body, None), Some("tmux".to_string()));
+    }
+
+    #[test]
+    fn parse_backend_choice_returns_none_when_no_runtime_section() {
+        let body = "[server]\nport = 3333\n";
+        assert_eq!(parse_backend_choice(body, None), None);
+    }
+
+    #[test]
+    fn backend_by_name_returns_known_backends() {
+        assert_eq!(backend_by_name("tmux").unwrap().name(), "tmux");
+        assert_eq!(backend_by_name("zellij").unwrap().name(), "zellij");
+        assert!(backend_by_name("native").is_none());
+        assert!(backend_by_name("bogus").is_none());
+    }
 
     #[test]
     fn is_shell_recognizes_common_shells() {

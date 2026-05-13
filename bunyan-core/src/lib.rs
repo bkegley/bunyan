@@ -34,7 +34,11 @@ pub fn init_state() -> Arc<state::AppState> {
     let db_path = get_db_path();
     let conn = Connection::open(&db_path).expect("Failed to open database");
     db::initialize_database(&conn).expect("Failed to initialize database schema");
-    Arc::new(state::AppState::new(conn))
+    // Resolve the runtime backend from ~/.config/bunyan/config.toml. Defaults
+    // to tmux if the file's missing or doesn't specify a backend.
+    let config_dir = config_dir();
+    let backend = backends::resolve_backend(config_dir.as_deref(), None);
+    Arc::new(state::AppState::with_backend(conn, backend))
 }
 
 pub fn init_state_with_backend(
@@ -44,4 +48,8 @@ pub fn init_state_with_backend(
     let conn = Connection::open(&db_path).expect("Failed to open database");
     db::initialize_database(&conn).expect("Failed to initialize database schema");
     Arc::new(state::AppState::with_backend(conn, backend))
+}
+
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|p| p.join("bunyan"))
 }

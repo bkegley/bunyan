@@ -70,9 +70,29 @@ Sessions persist independently of the GUI. Closing your terminal or quitting the
 
 ## Hooks
 
-Bunyan publishes lifecycle events (`workspace.created`, `workspace.ready_to_view`, `workspace.archived`, `claude.started`, `claude.resumed`) and runs any executable scripts you've placed at `~/.config/bunyan/hooks/<event>` or `~/bunyan/repos/<repo>/.bunyan/hooks/<event>` when they fire. This is how you wire up "open the workspace in iTerm/zellij/etc," per-worktree bootstrap (`mise install`, `npm install`, …), Slack notifications, and anything else you want bunyan to trigger.
+Bunyan publishes lifecycle events (`workspace.created`, `workspace.ready_to_view`, `workspace.archived`, `claude.started`, `claude.resumed`, `claude.stopped`, etc.) and runs any executable scripts you've placed at `~/.config/bunyan/hooks/<event>` or `~/bunyan/repos/<repo>/.bunyan/hooks/<event>` when they fire. This is how you wire up "open the workspace in iTerm/zellij/etc," per-worktree bootstrap (`mise install`, `npm install`, …), Slack notifications, and anything else you want bunyan to trigger.
 
 Browse `examples/hooks/` for templates — including a drop-in replacement for the legacy iTerm window flow. See `bunyan hooks list <event>` and `bunyan hooks run <event> --workspace <id>` for debugging.
+
+## Runtime backends
+
+Bunyan supervises Claude/shell processes through a pluggable backend. Today it ships with two:
+
+- **`tmux`** (default) — what bunyan has always used. One tmux session per repo, one window per workspace.
+- **`zellij`** — first-class for zellij users. One zellij session per repo, one tab per workspace.
+
+Pick one in `~/.config/bunyan/config.toml`:
+
+```toml
+[runtime]
+backend = "zellij"
+
+# Per-repo override (e.g. stay on tmux when working on bunyan itself):
+[runtime.repos.bunyan]
+backend = "tmux"
+```
+
+If the file's missing or doesn't specify, bunyan uses tmux. Switching is a config edit — no fork required.
 
 ## Development
 
