@@ -146,8 +146,10 @@ pub async fn create(
     let ws_clone = final_ws.clone();
     let repo_clone = repo.clone();
     let wt_clone = wt_path.clone();
+    let bus = state.event_bus.clone();
     tokio::task::spawn_blocking(move || {
-        events::fire_workspace_event(
+        events::fire_and_publish(
+            &bus,
             names::WORKSPACE_CREATED,
             &ws_clone,
             &repo_clone,
@@ -177,8 +179,10 @@ pub async fn archive(
     let ws_clone = ws.clone();
     let repo_clone = repo.clone();
     let wt_clone = wt_path_for_event.clone();
+    let bus = state.event_bus.clone();
     tokio::task::spawn_blocking(move || {
-        events::fire_workspace_event(
+        events::fire_and_publish(
+            &bus,
             names::WORKSPACE_ARCHIVED,
             &ws_clone,
             &repo_clone,
@@ -341,8 +345,10 @@ pub async fn start_claude(
         let ws_clone = ws.clone();
         let repo_clone = repo.clone();
         let wp_clone = ws_path.clone();
+        let bus = state.event_bus.clone();
         tokio::task::spawn_blocking(move || {
-            events::fire_workspace_event(
+            events::fire_and_publish(
+                &bus,
                 names::CLAUDE_STARTED,
                 &ws_clone,
                 &repo_clone,
@@ -444,8 +450,10 @@ pub async fn resume_claude(
         let repo_clone = repo.clone();
         let wp_clone = ws_path.clone();
         let session_id = input.session_id.clone();
+        let bus = state.event_bus.clone();
         tokio::task::spawn_blocking(move || {
-            events::fire_workspace_event_with_extras(
+            events::fire_and_publish_with_extras(
+                &bus,
                 names::CLAUDE_RESUMED,
                 &ws_clone,
                 &repo_clone,

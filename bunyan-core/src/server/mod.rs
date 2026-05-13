@@ -47,6 +47,7 @@ use crate::state::AppState;
         routes::workspaces::diff,
         routes::workspaces::result,
         routes::agent_events::agent_events,
+        routes::events::stream,
     ),
     components(schemas(
         models::Repo,
@@ -88,6 +89,7 @@ use crate::state::AppState;
         (name = "system", description = "System information"),
         (name = "hooks", description = "Hook discovery and execution"),
         (name = "delegate", description = "Fire-and-forget agent delegation"),
+        (name = "events", description = "Live event stream (Server-Sent Events)"),
     )
 )]
 struct ApiDoc;
@@ -174,6 +176,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/workspaces/{id}/agent-events",
             post(routes::agent_events::agent_events),
         )
+        // Live event stream (SSE)
+        .route("/events", get(routes::events::stream))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

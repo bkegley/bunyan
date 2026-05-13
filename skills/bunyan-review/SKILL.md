@@ -99,6 +99,19 @@ curl -s -X POST http://127.0.0.1:3333/workspaces/<id>/claude/resume \
 curl -s -X POST http://127.0.0.1:3333/workspaces/<id>/archive
 ```
 
+## Live event stream
+
+```bash
+# Tail every bunyan lifecycle event in real time (workspace.*, claude.*)
+curl -N http://127.0.0.1:3333/events
+```
+
+Server-Sent Events: each block is `event: <name>\ndata: <json>\n\n`. Useful
+for tailing what's happening while you wait, or piping into jq for
+filtering. The on-disk hook executor is still the primary integration point;
+`/events` is the same stream exposed over HTTP for clients that prefer to
+subscribe over the network.
+
 ## Hook inspection (when something's not working)
 
 ```bash

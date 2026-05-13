@@ -79,6 +79,7 @@ pub async fn agent_events(
     let ws_path_clone = ws_path.clone();
     let extras_payload = payload.clone();
     let bunyan_event_clone = bunyan_event.to_string();
+    let bus = state.event_bus.clone();
     tokio::task::spawn_blocking(move || {
         let extras: Vec<(&str, String)> = vec![
             ("claude_event", claude_event_from_payload(&extras_payload)),
@@ -86,7 +87,8 @@ pub async fn agent_events(
         ];
         let extras_refs: Vec<(&str, &str)> =
             extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        events::fire_workspace_event_with_extras(
+        events::fire_and_publish_with_extras(
+            &bus,
             &bunyan_event_clone,
             &ws_clone,
             &repo_clone,

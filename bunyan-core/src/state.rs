@@ -2,6 +2,7 @@ use rusqlite::Connection;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::backends::{self, RuntimeBackend};
+use crate::event_bus::EventBus;
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -10,6 +11,10 @@ pub struct AppState {
     /// "http://127.0.0.1:3333"). Set by the server at startup; observation
     /// URLs returned to delegating agents use this as their base.
     pub server_origin: RwLock<String>,
+    /// In-process event bus. Routes publish lifecycle envelopes here so
+    /// `/events` (SSE) subscribers see them in real time. The on-disk hook
+    /// executor is the other consumer.
+    pub event_bus: Arc<EventBus>,
 }
 
 impl AppState {
@@ -18,6 +23,7 @@ impl AppState {
             db: Mutex::new(db),
             backend: backends::default_backend(),
             server_origin: RwLock::new(default_origin()),
+            event_bus: EventBus::new(256),
         }
     }
 
@@ -26,6 +32,7 @@ impl AppState {
             db: Mutex::new(db),
             backend,
             server_origin: RwLock::new(default_origin()),
+            event_bus: EventBus::new(256),
         }
     }
 

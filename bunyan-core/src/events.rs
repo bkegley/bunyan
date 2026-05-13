@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use crate::event_bus::{self, EventBus};
 use crate::hooks::{self, DefaultHookRoots, HookContext, HookRoots, HookRunResult};
 use crate::models::{Repo, Workspace};
 
@@ -67,6 +68,45 @@ pub fn fire_workspace_event_with_extras(
 /// Fire any event against arbitrary roots. Used by `bunyan hooks run`.
 pub fn fire_against_roots(roots: &dyn HookRoots, ctx: &HookContext) -> HookRunResult {
     hooks::fire(roots, ctx)
+}
+
+/// Publish a context's envelope onto the event bus. SSE subscribers see it
+/// in real time. Routes that want both on-disk hooks and SSE should call
+/// this *and* `fire_workspace_event`.
+pub fn publish_to_bus(bus: &EventBus, ctx: &HookContext) {
+    bus.publish(event_bus::envelope_from_context(ctx));
+}
+
+/// Convenience: fire on-disk hooks AND publish to the bus in one go.
+pub fn fire_and_publish(
+    bus: &EventBus,
+    event: &str,
+    ws: &Workspace,
+    repo: &Repo,
+    ws_path: &str,
+) -> HookRunResult {
+    let ctx = context_for(event, ws, repo, ws_path);
+    publish_to_bus(bus, &ctx);
+    let roots = roots_for(repo);
+    hooks::fire(&roots, &ctx)
+}
+
+/// Like `fire_and_publish` but with extras.
+pub fn fire_and_publish_with_extras(
+    bus: &EventBus,
+    event: &str,
+    ws: &Workspace,
+    repo: &Repo,
+    ws_path: &str,
+    extras: &[(&str, &str)],
+) -> HookRunResult {
+    let mut ctx = context_for(event, ws, repo, ws_path);
+    for (k, v) in extras {
+        ctx = ctx.with_extra(*k, *v);
+    }
+    publish_to_bus(bus, &ctx);
+    let roots = roots_for(repo);
+    hooks::fire(&roots, &ctx)
 }
 
 #[cfg(test)]

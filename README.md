@@ -74,6 +74,14 @@ Bunyan publishes lifecycle events (`workspace.created`, `workspace.ready_to_view
 
 Browse `examples/hooks/` for templates — including a drop-in replacement for the legacy iTerm window flow. See `bunyan hooks list <event>` and `bunyan hooks run <event> --workspace <id>` for debugging.
 
+Every event bunyan fires is also exposed over HTTP as Server-Sent Events:
+
+```sh
+curl -N http://127.0.0.1:3333/events
+```
+
+The Tauri client, browser-based dashboards, and any external integration can subscribe over the network without writing on-disk hook scripts.
+
 ## Runtime backends
 
 Bunyan supervises Claude/shell processes through a pluggable backend. Today it ships with two:

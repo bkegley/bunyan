@@ -13,6 +13,7 @@ pub mod hooks;
 pub mod events;
 pub mod delegation;
 pub mod claude_settings;
+pub mod event_bus;
 
 #[cfg(feature = "server")]
 pub mod server;

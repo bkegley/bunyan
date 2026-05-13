@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-server = ["dep:axum", "dep:tower-http", "dep:tokio", "dep:utoipa", "dep:utoipa-axum"]
+server = ["tokio/rt-multi-thread", "tokio/macros", "tokio/signal", "dep:axum", "dep:tower-http", "dep:tokio-stream", "dep:utoipa", "dep:utoipa-axum"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -16,13 +16,16 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 bollard = "0.18"
 futures-util = "0.3"
+# tokio::sync::broadcast is used by the event bus regardless of feature.
+tokio = { version = "1", features = ["sync"] }
 
 # Optional: server dependencies
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 utoipa = { version = "5", features = ["axum_extras"], optional = true }
 utoipa-axum = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }

@@ -121,8 +121,10 @@ pub async fn delegate(
         let ws_clone = ws.clone();
         let repo_clone = repo.clone();
         let wt_clone = wt_path.clone();
+        let bus = state.event_bus.clone();
         tokio::task::spawn_blocking(move || {
-            events::fire_workspace_event(
+            events::fire_and_publish(
+                &bus,
                 names::WORKSPACE_CREATED,
                 &ws_clone,
                 &repo_clone,
@@ -133,7 +135,7 @@ pub async fn delegate(
         .map_err(|e| BunyanError::Process(e.to_string()))?;
     }
 
-    // 5. Spawn Claude with the prompt in the new workspace.
+    // 6. Spawn Claude with the prompt in the new workspace.
     {
         let backend = state.backend.clone();
         let rn = repo.name.clone();
@@ -145,13 +147,15 @@ pub async fn delegate(
             .map_err(|e| BunyanError::Process(e.to_string()))??;
     }
 
-    // 6. Fire claude.started.
+    // 7. Fire claude.started.
     {
         let ws_clone = ws.clone();
         let repo_clone = repo.clone();
         let wt_clone = wt_path.clone();
+        let bus = state.event_bus.clone();
         tokio::task::spawn_blocking(move || {
-            events::fire_workspace_event(
+            events::fire_and_publish(
+                &bus,
                 names::CLAUDE_STARTED,
                 &ws_clone,
                 &repo_clone,
