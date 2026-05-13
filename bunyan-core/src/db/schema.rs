@@ -53,6 +53,19 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
     let _ = conn.execute_batch(
         "ALTER TABLE workspaces ADD COLUMN container_id TEXT",
     );
+    // Migrations: track delegation lineage. parent_workspace_id is the
+    // workspace that spawned this one (for "what did I delegate?" queries);
+    // delegation_prompt is the literal prompt the parent passed.
+    let _ = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN delegation_prompt TEXT",
+    );
+
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_workspaces_parent ON workspaces(parent_workspace_id)",
+    );
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings (

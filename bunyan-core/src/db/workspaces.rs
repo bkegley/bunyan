@@ -23,37 +23,57 @@ fn row_to_workspace(row: &rusqlite::Row) -> rusqlite::Result<Workspace> {
         container_id: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        parent_workspace_id: row.get(9)?,
+        delegation_prompt: row.get(10)?,
     })
 }
 
 const SELECT_COLS: &str =
-    "id, repository_id, directory_name, branch, state, container_mode, container_id, created_at, updated_at";
+    "id, repository_id, directory_name, branch, state, container_mode, container_id, created_at, updated_at, parent_workspace_id, delegation_prompt";
 
 pub fn list(conn: &Connection, repository_id: Option<&str>) -> Result<Vec<Workspace>> {
-    match repository_id {
-        Some(repo_id) => {
-            let sql = format!(
-                "SELECT {} FROM workspaces WHERE repository_id = ?1 ORDER BY created_at DESC",
-                SELECT_COLS
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map([repo_id], |row| row_to_workspace(row))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        }
-        None => {
-            let sql = format!(
-                "SELECT {} FROM workspaces ORDER BY created_at DESC",
-                SELECT_COLS
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map([], |row| row_to_workspace(row))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        }
+    list_filtered(conn, &ListFilters {
+        repository_id: repository_id.map(|s| s.to_string()),
+        ..Default::default()
+    })
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ListFilters {
+    pub repository_id: Option<String>,
+    pub state: Option<WorkspaceState>,
+    pub parent_workspace_id: Option<String>,
+    /// ISO-8601 timestamp; rows with `created_at >= since` only.
+    pub since: Option<String>,
+}
+
+pub fn list_filtered(conn: &Connection, filters: &ListFilters) -> Result<Vec<Workspace>> {
+    let mut sql = format!("SELECT {} FROM workspaces WHERE 1=1", SELECT_COLS);
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(repo) = &filters.repository_id {
+        sql.push_str(" AND repository_id = ?");
+        params.push(Box::new(repo.clone()));
     }
+    if let Some(state) = &filters.state {
+        sql.push_str(" AND state = ?");
+        params.push(Box::new(state.as_str().to_string()));
+    }
+    if let Some(parent) = &filters.parent_workspace_id {
+        sql.push_str(" AND parent_workspace_id = ?");
+        params.push(Box::new(parent.clone()));
+    }
+    if let Some(since) = &filters.since {
+        sql.push_str(" AND created_at >= ?");
+        params.push(Box::new(since.clone()));
+    }
+    sql.push_str(" ORDER BY created_at DESC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| row_to_workspace(row))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Workspace> {
@@ -69,6 +89,18 @@ pub fn get(conn: &Connection, id: &str) -> Result<Workspace> {
 }
 
 pub fn create(conn: &Connection, input: CreateWorkspaceInput) -> Result<Workspace> {
+    create_with_lineage(conn, input, None, None)
+}
+
+/// Like `create`, but also records the parent workspace and delegation prompt.
+/// Used by `POST /delegate` so observation endpoints can answer
+/// "what did workspace X spawn?" and "what was the spawn prompt?"
+pub fn create_with_lineage(
+    conn: &Connection,
+    input: CreateWorkspaceInput,
+    parent_workspace_id: Option<&str>,
+    delegation_prompt: Option<&str>,
+) -> Result<Workspace> {
     // Verify the repo exists
     crate::db::repos::get(conn, &input.repository_id)?;
 
@@ -76,8 +108,8 @@ pub fn create(conn: &Connection, input: CreateWorkspaceInput) -> Result<Workspac
     let ts = now();
 
     conn.execute(
-        "INSERT INTO workspaces (id, repository_id, directory_name, branch, state, container_mode, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO workspaces (id, repository_id, directory_name, branch, state, container_mode, created_at, updated_at, parent_workspace_id, delegation_prompt)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
             input.repository_id,
@@ -87,6 +119,8 @@ pub fn create(conn: &Connection, input: CreateWorkspaceInput) -> Result<Workspac
             input.container_mode.as_str(),
             ts,
             ts,
+            parent_workspace_id,
+            delegation_prompt,
         ],
     )?;
 
@@ -335,6 +369,127 @@ mod tests {
 
         let all = list(&conn, None).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_filtered_by_state_returns_only_matching_state() {
+        let conn = test_db();
+        let repo = create_test_repo(&conn, "frontend");
+        let ready = create(
+            &conn,
+            CreateWorkspaceInput {
+                repository_id: repo.id.clone(),
+                directory_name: "ready-one".into(),
+                branch: "r1".into(),
+                container_mode: ContainerMode::Local,
+            },
+        )
+        .unwrap();
+        let to_archive = create(
+            &conn,
+            CreateWorkspaceInput {
+                repository_id: repo.id,
+                directory_name: "to-archive".into(),
+                branch: "a1".into(),
+                container_mode: ContainerMode::Local,
+            },
+        )
+        .unwrap();
+        archive(&conn, &to_archive.id).unwrap();
+
+        let only_ready = list_filtered(
+            &conn,
+            &ListFilters {
+                state: Some(WorkspaceState::Ready),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(only_ready.len(), 1);
+        assert_eq!(only_ready[0].id, ready.id);
+
+        let only_archived = list_filtered(
+            &conn,
+            &ListFilters {
+                state: Some(WorkspaceState::Archived),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(only_archived.len(), 1);
+        assert_eq!(only_archived[0].id, to_archive.id);
+    }
+
+    #[test]
+    fn list_filtered_by_delegated_by_returns_children_of_parent() {
+        let conn = test_db();
+        let repo = create_test_repo(&conn, "frontend");
+        let parent = create(
+            &conn,
+            CreateWorkspaceInput {
+                repository_id: repo.id.clone(),
+                directory_name: "parent".into(),
+                branch: "p".into(),
+                container_mode: ContainerMode::Local,
+            },
+        )
+        .unwrap();
+        let child = create_with_lineage(
+            &conn,
+            CreateWorkspaceInput {
+                repository_id: repo.id.clone(),
+                directory_name: "child".into(),
+                branch: "c".into(),
+                container_mode: ContainerMode::Local,
+            },
+            Some(&parent.id),
+            Some("fix the flaky test"),
+        )
+        .unwrap();
+        // An unrelated peer
+        create(
+            &conn,
+            CreateWorkspaceInput {
+                repository_id: repo.id,
+                directory_name: "peer".into(),
+                branch: "x".into(),
+                container_mode: ContainerMode::Local,
+            },
+        )
+        .unwrap();
+
+        let kids = list_filtered(
+            &conn,
+            &ListFilters {
+                parent_workspace_id: Some(parent.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].id, child.id);
+        assert_eq!(kids[0].parent_workspace_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(kids[0].delegation_prompt.as_deref(), Some("fix the flaky test"));
+    }
+
+    #[test]
+    fn create_with_lineage_records_parent_and_prompt() {
+        let conn = test_db();
+        let repo = create_test_repo(&conn, "frontend");
+        let ws = create_with_lineage(
+            &conn,
+            CreateWorkspaceInput {
+                repository_id: repo.id,
+                directory_name: "side".into(),
+                branch: "side".into(),
+                container_mode: ContainerMode::Local,
+            },
+            Some("parent-id"),
+            Some("do the thing"),
+        )
+        .unwrap();
+        assert_eq!(ws.parent_workspace_id.as_deref(), Some("parent-id"));
+        assert_eq!(ws.delegation_prompt.as_deref(), Some("do the thing"));
     }
 
     #[test]

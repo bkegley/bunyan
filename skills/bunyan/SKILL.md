@@ -36,11 +36,14 @@ bunyan up
 
 | Action | Method | Endpoint |
 |---|---|---|
+| Delegate side-task | POST | `/delegate` |
 | List repos | GET | `/repos` |
 | Get repo | GET | `/repos/:id` |
 | Create repo | POST | `/repos` |
-| List workspaces | GET | `/workspaces?repo_id=` |
+| List workspaces | GET | `/workspaces?repo_id=&status=&delegated_by=&since=` |
 | Get workspace | GET | `/workspaces/:id` |
+| Workspace diff vs default branch | GET | `/workspaces/:id/diff` |
+| Structured workspace result | GET | `/workspaces/:id/result` |
 | Create workspace | POST | `/workspaces` |
 | Archive workspace | POST | `/workspaces/:id/archive` |
 | Start Claude | POST | `/workspaces/:id/claude` |
@@ -60,6 +63,13 @@ bunyan up
 | List settings | GET | `/settings` |
 | Get setting | GET | `/settings/:key` |
 | Set setting | PUT | `/settings/:key` |
+| List hooks for event | GET | `/hooks?event=&repo=` |
+| Fire event (debug) | POST | `/hooks/run` |
+
+> **Routing tip:** if you're a *parent agent* delegating a side-task, use the
+> thinner `bunyan-delegate` skill — one call (`POST /delegate`), then forget.
+> If you're a *reviewer* (or future-you) coming back to inspect spawned work,
+> use the `bunyan-review` skill. The full surface stays here for everything else.
 
 ## Routing
 

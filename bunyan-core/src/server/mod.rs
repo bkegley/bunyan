@@ -43,6 +43,9 @@ use crate::state::AppState;
         routes::settings::set,
         routes::hooks::list,
         routes::hooks::run,
+        routes::delegate::delegate,
+        routes::workspaces::diff,
+        routes::workspaces::result,
     ),
     components(schemas(
         models::Repo,
@@ -70,6 +73,8 @@ use crate::state::AppState;
         routes::hooks::HookOutcomeJson,
         routes::hooks::RunInput,
         routes::hooks::RunResponse,
+        crate::delegation::DelegateInput,
+        crate::delegation::DelegateResponse,
     )),
     tags(
         (name = "health", description = "Health check"),
@@ -81,6 +86,7 @@ use crate::state::AppState;
         (name = "settings", description = "App settings"),
         (name = "system", description = "System information"),
         (name = "hooks", description = "Hook discovery and execution"),
+        (name = "delegate", description = "Fire-and-forget agent delegation"),
     )
 )]
 struct ApiDoc;
@@ -157,11 +163,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Hooks
         .route("/hooks", get(routes::hooks::list))
         .route("/hooks/run", post(routes::hooks::run))
+        // Delegate
+        .route("/delegate", post(routes::delegate::delegate))
+        // Observation
+        .route("/workspaces/{id}/diff", get(routes::workspaces::diff))
+        .route("/workspaces/{id}/result", get(routes::workspaces::result))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
 pub async fn start_server(state: Arc<AppState>, port: u16) {
+    state.set_server_origin(format!("http://127.0.0.1:{}", port));
     let app = build_router(state);
 
     // Write port file for discovery

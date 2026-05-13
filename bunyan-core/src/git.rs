@@ -8,6 +8,10 @@ pub trait GitOps: Send + Sync {
     fn worktree_remove(&self, repo_path: &str, worktree_path: &str, force: bool) -> Result<()>;
     #[allow(dead_code)]
     fn worktree_list(&self, repo_path: &str) -> Result<Vec<String>>;
+    /// Return `git diff base..HEAD` plus uncommitted-but-tracked changes
+    /// for the worktree at `worktree_path`. `base` is usually the repo's
+    /// default branch.
+    fn worktree_diff(&self, worktree_path: &str, base: &str) -> Result<String>;
 }
 
 pub struct RealGit;
@@ -66,6 +70,30 @@ impl GitOps for RealGit {
         }
 
         Ok(())
+    }
+
+    fn worktree_diff(&self, worktree_path: &str, base: &str) -> Result<String> {
+        // Combine committed diffs (base..HEAD) with uncommitted (HEAD vs working tree).
+        // git diff base...HEAD shows commits unique to this branch since branching.
+        let committed = Command::new("git")
+            .args(["diff", &format!("{}...HEAD", base)])
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|e| BunyanError::Git(format!("Failed to run git diff: {}", e)))?;
+        let uncommitted = Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|e| BunyanError::Git(format!("Failed to run git diff HEAD: {}", e)))?;
+
+        let mut combined = String::new();
+        if committed.status.success() {
+            combined.push_str(&String::from_utf8_lossy(&committed.stdout));
+        }
+        if uncommitted.status.success() {
+            combined.push_str(&String::from_utf8_lossy(&uncommitted.stdout));
+        }
+        Ok(combined)
     }
 
     fn worktree_list(&self, repo_path: &str) -> Result<Vec<String>> {

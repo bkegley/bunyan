@@ -1,6 +1,15 @@
 # Bunyan
 
-A development environment manager for macOS that orchestrates Git worktrees, tmux sessions, Docker containers, and Claude Code from a desktop app or CLI. Built with Tauri (Rust) and React (TypeScript).
+The substrate for fire-and-forget agent delegation. Your current Claude says
+"spawn a side-task to handle X" via `POST /delegate` and immediately forgets
+it ever happened; a fresh Claude runs the side-task to completion in its own
+worktree. Bunyan keeps track of the spawned work so a human (or a different
+agent) can come back and review it later.
+
+Internally bunyan owns git worktrees, tmux/zellij/etc. process supervision,
+optional Docker containers, and a filesystem-based hook system that lets you
+react to lifecycle events. The desktop GUI and CLI are both clients of the
+same HTTP server.
 
 ## Quick Start
 

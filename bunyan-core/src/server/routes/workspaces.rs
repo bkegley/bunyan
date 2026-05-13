@@ -21,6 +21,12 @@ use crate::workspace;
 #[derive(Deserialize)]
 pub struct ListQuery {
     pub repo_id: Option<String>,
+    /// "ready" or "archived". Maps to WorkspaceState.
+    pub status: Option<String>,
+    /// Filter to workspaces spawned by this parent workspace ID.
+    pub delegated_by: Option<String>,
+    /// ISO-8601 timestamp; only rows with created_at >= since.
+    pub since: Option<String>,
 }
 
 /// Open the workspace view: fire `workspace.ready_to_view` and let the
@@ -56,13 +62,37 @@ async fn view_workspace(
     .map_err(ApiError)
 }
 
-#[utoipa::path(get, path = "/workspaces", params(("repo_id" = Option<String>, Query, description = "Filter by repository ID")), responses((status = 200, body = Vec<Workspace>), (status = 500, body = ErrorResponse)), operation_id = "list_workspaces", tag = "workspaces")]
+#[utoipa::path(get, path = "/workspaces",
+    params(
+        ("repo_id" = Option<String>, Query, description = "Filter by repository ID"),
+        ("status" = Option<String>, Query, description = "Filter by state: 'ready' or 'archived'"),
+        ("delegated_by" = Option<String>, Query, description = "Filter to workspaces spawned by this parent ID"),
+        ("since" = Option<String>, Query, description = "Only workspaces created at or after this ISO-8601 timestamp"),
+    ),
+    responses((status = 200, body = Vec<Workspace>), (status = 500, body = ErrorResponse)),
+    operation_id = "list_workspaces", tag = "workspaces"
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Workspace>>, ApiError> {
+    let state_filter = match query.status.as_deref() {
+        Some(s) => Some(
+            crate::models::WorkspaceState::from_db(s)
+                .map_err(|e| ApiError(crate::error::BunyanError::NotFound(e)))?,
+        ),
+        None => None,
+    };
     let conn = state.db.lock().unwrap();
-    let workspaces = db::workspaces::list(&conn, query.repo_id.as_deref())?;
+    let workspaces = db::workspaces::list_filtered(
+        &conn,
+        &db::workspaces::ListFilters {
+            repository_id: query.repo_id,
+            state: state_filter,
+            parent_workspace_id: query.delegated_by,
+            since: query.since,
+        },
+    )?;
     Ok(Json(workspaces))
 }
 
@@ -518,4 +548,72 @@ pub async fn kill_pane_handler(
         .map_err(ApiError)?;
 
     Ok(Json(StatusResponse { status: "killed".into() }))
+}
+
+/// Observation endpoint: git diff for the workspace against the repo's
+/// default branch. Returns plain text; empty if there are no changes.
+#[utoipa::path(get, path = "/workspaces/{id}/diff",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses((status = 200, body = String), (status = 404, body = ErrorResponse)),
+    tag = "workspaces"
+)]
+pub async fn diff(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<String, ApiError> {
+    let (_ws, repo, ws_path) = {
+        let conn = state.db.lock().unwrap();
+        workspace::resolve_workspace_path(&conn, &id)?
+    };
+
+    let base = repo.default_branch.clone();
+    let diff = tokio::task::spawn_blocking(move || {
+        let git = RealGit;
+        git.worktree_diff(&ws_path, &base)
+    })
+    .await
+    .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+    .map_err(ApiError)?;
+
+    Ok(diff)
+}
+
+/// Observation endpoint: contents of the workspace's result.json, if any.
+/// v4 hooks (or the spawned agent itself) write this file at the workspace
+/// root when work completes; observers read it here to learn the outcome.
+#[utoipa::path(get, path = "/workspaces/{id}/result",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, body = serde_json::Value),
+        (status = 204, description = "No result has been written yet"),
+        (status = 404, body = ErrorResponse)
+    ),
+    tag = "workspaces"
+)]
+pub async fn result(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let (_ws, _repo, ws_path) = {
+        let conn = state.db.lock().unwrap();
+        workspace::resolve_workspace_path(&conn, &id)?
+    };
+
+    let result_path = std::path::PathBuf::from(&ws_path).join("result.json");
+    if !result_path.exists() {
+        return Ok((StatusCode::NO_CONTENT, "").into_response());
+    }
+    let body = tokio::task::spawn_blocking(move || std::fs::read_to_string(&result_path))
+        .await
+        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?
+        .map_err(|e| ApiError(crate::error::BunyanError::Process(e.to_string())))?;
+
+    // Try to parse as JSON; if it doesn't parse, return as raw text.
+    match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(v) => Ok(Json(v).into_response()),
+        Err(_) => Ok(body.into_response()),
+    }
 }

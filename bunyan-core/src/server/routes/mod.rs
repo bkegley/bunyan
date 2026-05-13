@@ -7,3 +7,4 @@ pub mod settings;
 pub mod editors;
 pub mod system;
 pub mod hooks;
+pub mod delegate;

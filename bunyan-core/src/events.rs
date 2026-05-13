@@ -85,6 +85,8 @@ mod tests {
             container_id: None,
             created_at: "t".to_string(),
             updated_at: "t".to_string(),
+            parent_workspace_id: None,
+            delegation_prompt: None,
         }
     }
 

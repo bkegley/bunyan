@@ -126,6 +126,13 @@ pub struct Workspace {
     pub container_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Workspace that spawned this one via POST /delegate. None for
+    /// workspaces created the regular way.
+    #[serde(default)]
+    pub parent_workspace_id: Option<String>,
+    /// Literal prompt the parent agent gave when delegating.
+    #[serde(default)]
+    pub delegation_prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

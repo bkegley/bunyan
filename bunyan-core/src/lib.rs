@@ -11,6 +11,7 @@ pub mod workspace;
 pub mod sessions;
 pub mod hooks;
 pub mod events;
+pub mod delegation;
 
 #[cfg(feature = "server")]
 pub mod server;
