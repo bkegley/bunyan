@@ -1,63 +1,85 @@
 ---
 name: bunyan
-description: Drive the Bunyan daemon — fire-and-forget agent delegation, workspace/worktree management, Claude session orchestration, container ops. Route to the right reference below for what you're trying to do.
+description: Drive the Bunyan daemon — an HTTP API for managing git worktrees, running Claude sessions, delegating side-tasks to fresh agents, and reacting to lifecycle events. Use for any workspace, session, container, or delegation operation. Route to the right reference page below based on the task.
 ---
 
 # Bunyan
 
-Bunyan is the substrate for **fire-and-forget agent delegation.** A parent
-agent calls `POST /delegate` to hand a side-task to a fresh Claude in an
-isolated worktree, gets back a URL, and forgets about it. Reviewers (humans
-or other agents) come back later to inspect what got spawned.
+Bunyan is a local HTTP daemon (default `http://127.0.0.1:3333`) that
+orchestrates the moving parts of a multi-workspace development setup:
 
-Bunyan also predates that value-prop — it still manages worktrees, Claude
-sessions, tmux/zellij panes, Docker containers, and editor launches. This
-skill covers all of it.
+- **Git worktrees** — each "workspace" is a worktree on its own branch,
+  living under `~/bunyan/workspaces/<repo>/<dir>`. Bunyan creates, lists,
+  and tears them down.
+- **Claude sessions** — bunyan supervises long-lived Claude processes
+  inside the worktree via a pluggable runtime backend (tmux or zellij).
+  Sessions persist across terminal restarts.
+- **Fire-and-forget delegation** — `POST /delegate` hands a side-task to a
+  fresh Claude in a new worktree atomically (worktree + bootstrap +
+  spawn + hook injection). The caller gets back a URL and moves on.
+- **Lifecycle events + hooks** — every state change publishes a
+  bunyan event. Scripts on disk (`~/.config/bunyan/hooks/<event>`) and
+  HTTP subscribers (`GET /events` SSE) both receive them.
+- **Observation surface** — read `result`, `diff`, `panes`, `sessions`
+  per-workspace; filter the workspace list by status, lineage, or
+  age; tail live events.
+- **Container mode** — workspaces can run inside per-workspace Docker
+  containers with port forwarding.
+- **Editor launch** — open any workspace in VS Code / Cursor / Zed /
+  Windsurf / Antigravity with one POST.
 
 ## Where to look
 
-**Read the section that matches what you're about to do. Don't read others.**
+Read the reference page that matches the task. **Don't read others** —
+each page is self-contained.
 
-- **Delegating a side-task to a fresh Claude** → [`reference/delegate.md`](reference/delegate.md)
-  One endpoint, one call, then forget. The parent-agent flow.
+| If you're about to… | Read |
+| --- | --- |
+| Hand a side-task to a fresh Claude (fire-and-forget) | [`reference/delegate.md`](reference/delegate.md) |
+| Inspect / review delegated work (list, filter, diff, result, resume) | [`reference/review.md`](reference/review.md) |
+| Manually create a workspace you'll drive yourself | [`reference/worktree-workflows.md`](reference/worktree-workflows.md) |
+| Manage Claude sessions in an existing workspace (start, resume, shell, kill pane) | [`reference/session-workflows.md`](reference/session-workflows.md) |
+| Set up container-mode workspaces (Docker) | [`reference/container-workflows.md`](reference/container-workflows.md) |
+| Register a new repository | [`reference/project-workflows.md`](reference/project-workflows.md) |
+| Subscribe to lifecycle events from a script or run code on workspace creation, claude stop, etc. | [`reference/hooks.md`](reference/hooks.md) |
+| Look up an exact endpoint, payload, or response shape | [`reference/api-reference.md`](reference/api-reference.md) |
 
-- **Reviewing what got delegated** → [`reference/review.md`](reference/review.md)
-  Lists, filters, lineage, diffs, results, the SSE event stream, lifecycle
-  actions. The reviewer flow.
+## Prerequisites
 
-- **Manual worktree workflows** → [`reference/worktree-workflows.md`](reference/worktree-workflows.md)
-  Creating workspaces yourself instead of via delegation.
-
-- **Existing Claude session ops** (start / resume / shell / kill pane in an
-  already-created workspace) → [`reference/session-workflows.md`](reference/session-workflows.md)
-
-- **Container-mode workspaces** (Docker) → [`reference/container-workflows.md`](reference/container-workflows.md)
-
-- **Registering new repos** → [`reference/project-workflows.md`](reference/project-workflows.md)
-
-- **Full endpoint catalog** → [`reference/api-reference.md`](reference/api-reference.md)
-  When you need the exact path / payload / response shape.
-
-- **Hooks — react to bunyan events from disk** → [`reference/hooks.md`](reference/hooks.md)
-  Drop scripts in `~/.config/bunyan/hooks/<event>` to react to workspace
-  and Claude lifecycle. The on-disk extension point.
-
-## Before any operation
-
-The daemon must be running:
+The daemon must be reachable before any operation:
 
 ```bash
 curl -s http://127.0.0.1:3333/health
 ```
 
-If unreachable: `bunyan up` to spawn it, `bunyan down` to stop it,
-`bunyan serve` to run in the foreground.
+If unreachable:
 
-## Installation (if `bunyan` is not on PATH)
+```bash
+bunyan up      # spawn the daemon in the background
+bunyan down    # stop it
+bunyan serve   # run in the foreground
+```
+
+The CLI auto-discovers the port from `~/.bunyan/server.port`; pass
+`--port <N>` to override.
+
+## Installation
+
+If `bunyan` is not on the user's PATH (`command -v bunyan` fails):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bkegley/bunyan/main/install.sh | bash
 ```
 
-Drops the binary at `$HOME/.local/bin/bunyan`. Other platforms: `cargo
-install --git https://github.com/bkegley/bunyan bunyan-cli`.
+Drops the binary at `$HOME/.local/bin/bunyan`. Other platforms:
+`cargo install --git https://github.com/bkegley/bunyan bunyan-cli`.
+
+## Universal guardrails
+
+- Always health-check before operations.
+- `directory_name` is a short identifier — no spaces or slashes.
+- Branch names must be valid git branch names.
+- Archive (`POST /workspaces/:id/archive`) removes the worktree on disk
+  and tears down its processes. Destructive.
+- Container mode requires Docker to be running
+  (`GET /docker/status`).
