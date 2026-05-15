@@ -1,14 +1,10 @@
----
-name: bunyan-delegate
-description: Fire-and-forget agent delegation. Hand off a side-task to a fresh Claude in an isolated worktree, get back a URL, and forget about it. Use whenever the work being requested is incidental to your current task and should not consume your context.
----
+# Delegating a side-task
 
-# Bunyan: fire-and-forget delegation
-
-You are the *parent* agent. This skill exists so that you can spawn a side-task
-to handle something incidental — a bug fix in another file, a docs pass, a
-dependency upgrade — and **never think about it again.** The spawned task
-runs in its own worktree with its own fresh Claude. You move on.
+You are the *parent* agent. This page exists so that you can spawn a
+side-task to handle something incidental — a bug fix in another file, a
+docs pass, a dependency upgrade — and **never think about it again.** The
+spawned task runs in its own worktree with its own fresh Claude. You move
+on.
 
 ## When to use this
 
@@ -51,8 +47,23 @@ Response (201 Created):
 **Critical:** Log the `observation_url` somewhere durable (your notes,
 the user-visible turn output) so future-you or a reviewer can find the
 result. Then move on. Do NOT poll the workspace, do NOT wait for it to
-finish, do NOT read its transcript. That's a different skill
-(`bunyan-review`) for a different consumer.
+finish, do NOT read its transcript. That's for reviewers (see
+[`review.md`](review.md)), not for the parent.
+
+## What bunyan does behind the scenes
+
+So you don't have to ask the spawned agent to do these:
+
+- Creates the worktree off the repo's default branch.
+- Injects `.claude/settings.local.json` into the worktree with Stop /
+  SubagentStop / Notification / SessionStart hooks that report back to
+  bunyan. The spawned agent's prompt has zero awareness of bunyan.
+- Captures the Claude session ID on the workspace row, so reviewers can
+  `claude --resume <id>` directly.
+- On the agent's Stop turn, persists the payload to `last_result` on the
+  workspace row. `GET /workspaces/:id/result` reads it back.
+- Fires bunyan lifecycle events (`workspace.created`, `claude.started`,
+  `claude.stopped`, …) that user hooks and SSE clients receive.
 
 ## Prompt-writing tips
 
@@ -61,11 +72,16 @@ Include:
 
 - The exact thing to do, with file paths if you know them.
 - The success criterion ("tests pass", "PR opens", "commits land on
-  branch X").
+  branch X", "writes a summary to `summary.md` at the repo root").
 - Any standing conventions that matter (e.g. "this repo prefers small
   atomic commits").
-- A note if it should write its outcome to `result.json` at the worktree
-  root — observers will read that via `GET /workspaces/:id/result`.
+
+You do NOT need to tell the agent to write `result.json` — bunyan auto-
+captures the agent's Stop turn and surfaces it through
+`GET /workspaces/:id/result` from a DB column, not the filesystem. If you
+want a richer artifact for human review, ask the agent to write a
+markdown file at the repo root (e.g. `summary.md`) and tell the reviewer
+where to find it.
 
 ## Guardrails
 
@@ -81,7 +97,6 @@ Include:
 ## What you should NOT do here
 
 - Don't query `/workspaces`, `/sessions/active`, transcripts, or results
-  from this skill. Use `bunyan-review` for that.
-- Don't try to archive, kill panes, or otherwise manage the spawned
-  workspace's lifecycle from this skill. That's also `bunyan-review`'s
-  job.
+  from this flow. Use [`review.md`](review.md) for that.
+- Don't archive, kill panes, or otherwise manage the spawned workspace's
+  lifecycle. That's also for reviewers.

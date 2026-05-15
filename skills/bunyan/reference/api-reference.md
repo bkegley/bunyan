@@ -2,9 +2,45 @@
 
 Base URL: `http://127.0.0.1:3333` (or check `~/.bunyan/server.port`)
 
-All request/response bodies are JSON. Errors return `{"error": "<message>"}` with appropriate HTTP status.
+All request/response bodies are JSON. Errors return `{"error": "<message>"}`
+with appropriate HTTP status.
 
 The full OpenAPI spec is served at `GET /api-doc/openapi.json`.
+
+## Delegation (the value-prop endpoint)
+
+### POST /delegate
+Atomic: create worktree → bootstrap (via `workspace.created` hooks) → spawn
+Claude with the prompt and an injected `.claude/settings.local.json`.
+
+Body:
+```json
+{
+  "repo": "string (matches a Repo.name)",
+  "branch": "string (new branch off default_branch)",
+  "prompt": "string (the full task for the spawned Claude)",
+  "from": "string? (parent workspace id, for lineage)",
+  "directory_name": "string? (defaults to branch with / -> -)"
+}
+```
+
+Returns `201 Created` with `{"workspace_id": "...", "observation_url": "..."}`.
+
+See [`delegate.md`](delegate.md) for the parent-agent workflow.
+
+## Events
+
+### GET /events
+Server-Sent Events stream of every bunyan lifecycle event. Each block is
+`event: <name>\ndata: <json>\n\n`. Includes a 15-second keep-alive.
+
+```bash
+curl -N http://127.0.0.1:3333/events
+```
+
+Event names: `workspace.created`, `workspace.ready_to_view`,
+`workspace.archived`, `claude.started`, `claude.resumed`, `claude.stopped`,
+`claude.subagent_stopped`, `claude.notification`, `claude.session_started`.
 
 ## Health
 
@@ -39,30 +75,28 @@ Returns `Repo`.
 ### PUT /repos/:id
 Update a repo. Only specified fields are changed.
 
-Body:
-```json
-{
-  "name": "string?",
-  "default_branch": "string?",
-  "display_order": "number?",
-  "config": "object?"
-}
-```
-Returns `Repo`.
+Body: `{"name": "string?", "default_branch": "string?", "display_order": "number?", "config": "object?"}`. Returns `Repo`.
 
 ### DELETE /repos/:id
-Delete a repo and cascade to all its workspaces. Returns `null`.
+Delete a repo and cascade to its workspaces. Returns `null`.
 
 ## Workspaces
 
 ### GET /workspaces
-List workspaces. Optional query param `repo_id` to filter. Returns `Workspace[]`.
+List workspaces with optional filters. Returns `Workspace[]`.
+
+Query params (any combination):
+- `repo_id` — filter by repository
+- `status` — `ready` or `archived`
+- `delegated_by` — workspaces spawned by a specific parent workspace id
+- `since` — ISO-8601 timestamp; only rows with `created_at >= since`
 
 ### GET /workspaces/:id
 Get a workspace. Returns `Workspace`.
 
 ### POST /workspaces
-Create a workspace (git worktree + optional container).
+Create a workspace (git worktree + optional container). Use this for the
+*manual* flow. For agent delegation, use `POST /delegate`.
 
 Body:
 ```json
@@ -76,32 +110,56 @@ Body:
 Returns `Workspace`.
 
 ### POST /workspaces/:id/archive
-Archive a workspace. Removes worktree, kills panes, removes container. Returns `Workspace`.
+Archive a workspace. Fires `workspace.archived` hook, removes worktree,
+kills panes, removes container. Returns `Workspace`.
 
 ### POST /workspaces/:id/view
-Fire the `workspace.ready_to_view` hook to surface the workspace (open a terminal, focus a window, etc.). If no hook is configured, bunyan logs a note and the response is still 200. Returns `{"status": "attached"}`.
+Fire `workspace.ready_to_view` hook to surface the workspace in the user's
+configured terminal. If no hook is configured, returns 200 and a log note —
+the workspace is still up; bunyan just doesn't pop a window.
 
 ### GET /workspaces/:id/sessions
-Get Claude session history. Returns `ClaudeSessionEntry[]`.
+List Claude session history for this worktree (read from
+`~/.claude/projects/...`). Returns `ClaudeSessionEntry[]`.
 
 ### GET /workspaces/:id/panes
-List tmux panes. Returns `TmuxPane[]`.
+List runtime backend's process slots for this workspace. Returns
+`TmuxPane[]`. (Name kept for backwards-compat; works for tmux and zellij.)
 
 ### POST /workspaces/:id/claude
-Start or attach to Claude session. Returns `{"status": "created" | "attached"}`.
+Start (or attach to existing) Claude session in the workspace. Returns
+`{"status": "created" | "attached"}`.
 
 ### POST /workspaces/:id/claude/resume
-Resume a specific session.
+Resume a specific Claude session.
 
 Body: `{"session_id": "string"}`
 
 Returns `{"status": "resumed" | "attached"}`.
 
 ### POST /workspaces/:id/shell
-Open a shell pane. Returns `{"status": "created"}`.
+Open a shell pane in the workspace. Returns `{"status": "created"}`.
 
 ### DELETE /workspaces/:id/panes/:index
 Kill a pane by index. Returns `{"status": "killed"}`.
+
+### GET /workspaces/:id/diff
+Git diff of the worktree vs the repo's `default_branch`. Plain text.
+Empty if no changes.
+
+### GET /workspaces/:id/result
+Most recent Stop/SubagentStop payload bunyan captured from the spawned
+Claude's injected hooks. Read from the workspace's `last_result` SQLite
+column. Returns:
+- `200` + JSON if a Stop turn has been captured
+- `204 No Content` if the session hasn't stopped yet
+
+### POST /workspaces/:id/agent-events
+Ingress for spawned Claude's injected hooks. Body is Claude's verbatim
+hook stdin payload. Bunyan parses `hook_event_name` and `session_id`,
+persists session_id and (for Stop/SubagentStop) `last_result`, then
+re-fires the event onto bunyan's bus. Returns `202 Accepted`. Always 202
+— a hook crash should never block the spawned Claude.
 
 ## Sessions
 
@@ -122,7 +180,10 @@ Port mappings. Returns `PortMapping[]`.
 ## Editors
 
 ### GET /editors
-Detect installed editors (VSCode, Cursor, Zed, Windsurf, Antigravity). Returns `string[]` of editor IDs.
+Detect installed editors (VSCode, Cursor, Zed, Windsurf, Antigravity).
+Returns `string[]` of editor IDs. Terminal/multiplexer attachment is no
+longer an "editor" — that flows through the `workspace.ready_to_view`
+hook (see [`hooks.md`](hooks.md)).
 
 ### POST /workspaces/:id/editor
 Open the workspace directory in the specified editor.
@@ -130,6 +191,19 @@ Open the workspace directory in the specified editor.
 Body: `{"editor_id": "string"}`
 
 Returns `{"status": "opened"}`.
+
+## Hooks (introspection / debugging)
+
+### GET /hooks?event=<name>&repo=<name>
+List which on-disk hook scripts would run for an event. Returns
+`{"event": "...", "hooks": ["/path/to/script", ...]}`.
+
+### POST /hooks/run
+Fire an event by hand against the daemon. Useful for debugging hooks.
+
+Body: `{"event": "string", "workspace_id": "string?", "extras": {"k": "v"}}`
+
+Returns `{"event": "...", "outcomes": [{path, exit_code, duration_ms, stdout, stderr, timed_out, succeeded}, ...]}`.
 
 ## System
 
@@ -177,6 +251,12 @@ interface Workspace {
   container_id: string | null;
   created_at: string;
   updated_at: string;
+  // Set when this workspace was created via POST /delegate:
+  parent_workspace_id: string | null;
+  delegation_prompt: string | null;
+  // Populated by the spawned Claude's injected hooks reporting back:
+  claude_session_id: string | null;
+  last_result: string | null; // JSON string; surfaced parsed via GET /workspaces/:id/result
 }
 
 interface TmuxPane {
@@ -223,6 +303,9 @@ interface Setting {
 | Status | Meaning |
 |---|---|
 | 200 | Success |
+| 201 | Created (POST /delegate, POST /repos) |
+| 202 | Accepted (POST /workspaces/:id/agent-events) |
+| 204 | No content (GET /workspaces/:id/result before Stop) |
 | 400 | Bad request (invalid JSON, serialization error) |
 | 404 | Resource not found |
 | 500 | Internal error (git, docker, process, database) |

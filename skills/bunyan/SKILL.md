@@ -1,96 +1,63 @@
 ---
 name: bunyan
-description: Manage git worktrees, Claude sessions, and Docker containers via the Bunyan workspace manager. Use for side-fixes, worktree creation, session management, and container workflows.
+description: Drive the Bunyan daemon — fire-and-forget agent delegation, workspace/worktree management, Claude session orchestration, container ops. Route to the right reference below for what you're trying to do.
 ---
 
-# Bunyan Workspace Manager
+# Bunyan
 
-Bunyan manages git worktrees, Claude Code sessions, tmux panes, and Docker containers. Use it to spin up isolated workspaces for side-fixes, manage multiple Claude sessions, and orchestrate container-based development.
+Bunyan is the substrate for **fire-and-forget agent delegation.** A parent
+agent calls `POST /delegate` to hand a side-task to a fresh Claude in an
+isolated worktree, gets back a URL, and forgets about it. Reviewers (humans
+or other agents) come back later to inspect what got spawned.
 
-## Installation
+Bunyan also predates that value-prop — it still manages worktrees, Claude
+sessions, tmux/zellij panes, Docker containers, and editor launches. This
+skill covers all of it.
 
-If `bunyan` is not on the user's PATH (`command -v bunyan` fails), install it before attempting anything else:
+## Where to look
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/bkegley/bunyan/main/install.sh | bash
-```
+**Read the section that matches what you're about to do. Don't read others.**
 
-The installer drops the binary into `$HOME/.local/bin` by default. If that directory isn't on PATH, the installer prints the `export PATH=...` line to add. For non-macOS-ARM platforms it falls back to a source install hint (`cargo install --git https://github.com/bkegley/bunyan bunyan-cli`).
+- **Delegating a side-task to a fresh Claude** → [`reference/delegate.md`](reference/delegate.md)
+  One endpoint, one call, then forget. The parent-agent flow.
 
-## Prerequisites
+- **Reviewing what got delegated** → [`reference/review.md`](reference/review.md)
+  Lists, filters, lineage, diffs, results, the SSE event stream, lifecycle
+  actions. The reviewer flow.
 
-Before any operation, verify the server is running:
+- **Manual worktree workflows** → [`reference/worktree-workflows.md`](reference/worktree-workflows.md)
+  Creating workspaces yourself instead of via delegation.
+
+- **Existing Claude session ops** (start / resume / shell / kill pane in an
+  already-created workspace) → [`reference/session-workflows.md`](reference/session-workflows.md)
+
+- **Container-mode workspaces** (Docker) → [`reference/container-workflows.md`](reference/container-workflows.md)
+
+- **Registering new repos** → [`reference/project-workflows.md`](reference/project-workflows.md)
+
+- **Full endpoint catalog** → [`reference/api-reference.md`](reference/api-reference.md)
+  When you need the exact path / payload / response shape.
+
+- **Hooks — react to bunyan events from disk** → [`reference/hooks.md`](reference/hooks.md)
+  Drop scripts in `~/.config/bunyan/hooks/<event>` to react to workspace
+  and Claude lifecycle. The on-disk extension point.
+
+## Before any operation
+
+The daemon must be running:
 
 ```bash
 curl -s http://127.0.0.1:3333/health
 ```
 
-If unreachable, start it:
+If unreachable: `bunyan up` to spawn it, `bunyan down` to stop it,
+`bunyan serve` to run in the foreground.
+
+## Installation (if `bunyan` is not on PATH)
+
 ```bash
-bunyan up
+curl -fsSL https://raw.githubusercontent.com/bkegley/bunyan/main/install.sh | bash
 ```
 
-`bunyan up` spawns the daemon in the background. Use `bunyan down` to stop it, or `bunyan serve` to run it in the foreground. Check `~/.bunyan/server.port` for the actual port if a non-default one was used.
-
-## Quick Reference
-
-| Action | Method | Endpoint |
-|---|---|---|
-| Delegate side-task | POST | `/delegate` |
-| List repos | GET | `/repos` |
-| Get repo | GET | `/repos/:id` |
-| Create repo | POST | `/repos` |
-| List workspaces | GET | `/workspaces?repo_id=&status=&delegated_by=&since=` |
-| Get workspace | GET | `/workspaces/:id` |
-| Workspace diff vs default branch | GET | `/workspaces/:id/diff` |
-| Structured workspace result | GET | `/workspaces/:id/result` |
-| Create workspace | POST | `/workspaces` |
-| Archive workspace | POST | `/workspaces/:id/archive` |
-| Start Claude | POST | `/workspaces/:id/claude` |
-| Resume Claude | POST | `/workspaces/:id/claude/resume` |
-| Open shell | POST | `/workspaces/:id/shell` |
-| View workspace | POST | `/workspaces/:id/view` |
-| List panes | GET | `/workspaces/:id/panes` |
-| Kill pane | DELETE | `/workspaces/:id/panes/:index` |
-| Active sessions | GET | `/sessions/active` |
-| Docker status | GET | `/docker/status` |
-| Container status | GET | `/workspaces/:id/container/status` |
-| Container ports | GET | `/workspaces/:id/container/ports` |
-| Detect editors | GET | `/editors` |
-| Open in editor | POST | `/workspaces/:id/editor` |
-| System info | GET | `/system/info` |
-| OpenAPI spec | GET | `/api-doc/openapi.json` |
-| List settings | GET | `/settings` |
-| Get setting | GET | `/settings/:key` |
-| Set setting | PUT | `/settings/:key` |
-| List hooks for event | GET | `/hooks?event=&repo=` |
-| Fire event (debug) | POST | `/hooks/run` |
-
-> **Routing tip:** if you're a *parent agent* delegating a side-task, use the
-> thinner `bunyan-delegate` skill — one call (`POST /delegate`), then forget.
-> If you're a *reviewer* (or future-you) coming back to inspect spawned work,
-> use the `bunyan-review` skill. The full surface stays here for everything else.
-
-## Routing
-
-- **Creating worktrees / side-fixes**: See `reference/worktree-workflows.md`
-- **Claude session management**: See `reference/session-workflows.md`
-- **Repository setup**: See `reference/project-workflows.md`
-- **Docker / container ops**: See `reference/container-workflows.md`
-- **Full API details**: See `reference/api-reference.md`
-
-## Common Workflow: Side-Fix
-
-1. Find the repo: `GET /repos`
-2. Create worktree: `POST /workspaces` with `repository_id`, `directory_name`, `branch`
-3. Work in the worktree directory
-4. Archive when done: `POST /workspaces/:id/archive`
-
-## Guardrails
-
-- Always check health before operations
-- Use `directory_name` as a short identifier (no spaces, slashes)
-- Branch names must be valid git branch names
-- Archive cleans up the worktree and container (if any) — this is destructive
-- Container mode requires Docker to be running (`GET /docker/status`)
-- Session IDs must be alphanumeric with dashes/underscores only
+Drops the binary at `$HOME/.local/bin/bunyan`. Other platforms: `cargo
+install --git https://github.com/bkegley/bunyan bunyan-cli`.

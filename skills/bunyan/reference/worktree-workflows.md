@@ -4,6 +4,11 @@
 
 Bunyan workspaces are git worktrees. Each workspace gets its own directory, branch, and optionally a Docker container. Use worktrees for isolated side-fixes without disrupting your main work.
 
+> **If you're delegating a side-task to a fresh Claude, use
+> [`delegate.md`](delegate.md) instead.** It's one call vs. the multi-step
+> flow below. This page is for the manual case (you want a workspace and
+> you're going to drive it yourself).
+
 ## Prerequisites
 
 - Server running (`curl -s http://127.0.0.1:3333/health`)
