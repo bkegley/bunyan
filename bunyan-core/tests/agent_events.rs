@@ -1,9 +1,10 @@
 //! Integration tests for POST /workspaces/:id/agent-events.
 //!
 //! This endpoint is what spawned Claudes post into via their injected
-//! settings.local.json. We exercise the parsing, the result.json writeback
-//! on Stop, and the bunyan-event re-firing path (via a per-repo hook that
-//! receives the synthetic claude.stopped event).
+//! settings.local.json. We exercise the parsing, persistence of session_id
+//! and last_result on the workspace row, and the bunyan-event re-firing
+//! path (via a per-repo hook that receives the synthetic claude.stopped
+//! event).
 
 #![cfg(feature = "server")]
 
@@ -82,8 +83,7 @@ fn seed(state: &Arc<AppState>, repo_path: &Path) -> (String, String) {
 }
 
 #[tokio::test]
-async fn post_agent_events_with_stop_writes_result_json() {
-    // Build a temp repo+workspace shape that workspace_path() can resolve.
+async fn post_agent_events_with_stop_persists_last_result_and_session_id() {
     let root = unique_tempdir("stop_result");
     let repos_dir = root.join("repos");
     let workspaces_dir = root.join("workspaces");
@@ -96,7 +96,7 @@ async fn post_agent_events_with_stop_writes_result_json() {
 
     let state = make_state();
     let (_, ws_id) = seed(&state, &repo_path);
-    let app = build_router(state);
+    let app = build_router(state.clone());
 
     let payload = serde_json::json!({
         "hook_event_name": "Stop",
@@ -116,17 +116,25 @@ async fn post_agent_events_with_stop_writes_result_json() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-    let result_path = wt.join("result.json");
-    assert!(result_path.exists(), "Stop should have written result.json");
-    let body: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&result_path).unwrap()).unwrap();
-    assert_eq!(body["status"], "stopped");
-    assert_eq!(body["hook_event_name"], "Stop");
-    assert_eq!(body["raw"]["session_id"], "abc-123");
+    // No worktree writeback — bunyan keeps the worktree clean for git's sake.
+    assert!(
+        !wt.join("result.json").exists(),
+        "v7 must not write result.json to the worktree"
+    );
+
+    // Both fields land on the DB row.
+    let conn = state.db.lock().unwrap();
+    let row = bunyan_core::db::workspaces::get(&conn, &ws_id).unwrap();
+    assert_eq!(row.claude_session_id.as_deref(), Some("abc-123"));
+    let blob: serde_json::Value =
+        serde_json::from_str(row.last_result.as_deref().unwrap()).unwrap();
+    assert_eq!(blob["status"], "stopped");
+    assert_eq!(blob["hook_event_name"], "Stop");
+    assert_eq!(blob["raw"]["session_id"], "abc-123");
 }
 
 #[tokio::test]
-async fn post_agent_events_with_notification_does_not_write_result_json() {
+async fn post_agent_events_with_notification_does_not_overwrite_last_result() {
     let root = unique_tempdir("notify_no_result");
     let repos_dir = root.join("repos");
     let workspaces_dir = root.join("workspaces");
@@ -139,9 +147,9 @@ async fn post_agent_events_with_notification_does_not_write_result_json() {
 
     let state = make_state();
     let (_, ws_id) = seed(&state, &repo_path);
-    let app = build_router(state);
+    let app = build_router(state.clone());
 
-    let payload = serde_json::json!({"hook_event_name": "Notification"});
+    let payload = serde_json::json!({"hook_event_name": "Notification", "session_id": "n-1"});
     let resp = app
         .oneshot(
             Request::builder()
@@ -155,7 +163,13 @@ async fn post_agent_events_with_notification_does_not_write_result_json() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
+    // No writeback to disk, no last_result row update. session_id is still
+    // captured because Claude sends it on every event.
     assert!(!wt.join("result.json").exists());
+    let conn = state.db.lock().unwrap();
+    let row = bunyan_core::db::workspaces::get(&conn, &ws_id).unwrap();
+    assert!(row.last_result.is_none());
+    assert_eq!(row.claude_session_id.as_deref(), Some("n-1"));
 }
 
 #[tokio::test]

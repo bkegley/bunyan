@@ -486,7 +486,7 @@ async fn get_result_returns_204_when_no_result_file() {
 }
 
 #[tokio::test]
-async fn get_result_returns_json_when_result_file_present() {
+async fn get_result_returns_json_from_last_result_column() {
     let root = unique_tempdir("result_present");
     let repos_dir = root.join("repos");
     fs::create_dir_all(&repos_dir).unwrap();
@@ -496,11 +496,6 @@ async fn get_result_returns_json_when_result_file_present() {
     init_git_repo(&repo_path);
     let wt = workspaces_dir.join("myrepo").join("ws");
     fs::create_dir_all(&wt).unwrap();
-    fs::write(
-        wt.join("result.json"),
-        r#"{"status":"done","summary":"all good"}"#,
-    )
-    .unwrap();
 
     let (state, _) = make_state_with_fake_backend();
     let ws_id = {
@@ -518,7 +513,7 @@ async fn get_result_returns_json_when_result_file_present() {
             },
         )
         .unwrap();
-        db::workspaces::create(
+        let id = db::workspaces::create(
             &conn,
             bunyan_core::models::CreateWorkspaceInput {
                 repository_id: r.id,
@@ -528,7 +523,15 @@ async fn get_result_returns_json_when_result_file_present() {
             },
         )
         .unwrap()
-        .id
+        .id;
+        // Populate last_result the way agent_events would after a Stop.
+        db::workspaces::set_last_result(
+            &conn,
+            &id,
+            r#"{"status":"done","summary":"all good"}"#,
+        )
+        .unwrap();
+        id
     };
 
     let app = build_router(state);

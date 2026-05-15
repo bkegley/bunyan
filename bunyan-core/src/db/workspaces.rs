@@ -25,11 +25,13 @@ fn row_to_workspace(row: &rusqlite::Row) -> rusqlite::Result<Workspace> {
         updated_at: row.get(8)?,
         parent_workspace_id: row.get(9)?,
         delegation_prompt: row.get(10)?,
+        claude_session_id: row.get(11)?,
+        last_result: row.get(12)?,
     })
 }
 
 const SELECT_COLS: &str =
-    "id, repository_id, directory_name, branch, state, container_mode, container_id, created_at, updated_at, parent_workspace_id, delegation_prompt";
+    "id, repository_id, directory_name, branch, state, container_mode, container_id, created_at, updated_at, parent_workspace_id, delegation_prompt, claude_session_id, last_result";
 
 pub fn list(conn: &Connection, repository_id: Option<&str>) -> Result<Vec<Workspace>> {
     list_filtered(conn, &ListFilters {
@@ -170,6 +172,29 @@ pub fn count_container_workspaces(conn: &Connection, repo_id: &str) -> Result<i6
         |row| row.get(0),
     )?;
     Ok(count)
+}
+
+/// Record the Claude session ID a spawned agent settled on. Idempotent
+/// — overwrites whatever was there (Claude can resume into the same
+/// workspace with a new session, and the latest one wins).
+pub fn set_claude_session_id(conn: &Connection, id: &str, session_id: &str) -> Result<()> {
+    let ts = now();
+    conn.execute(
+        "UPDATE workspaces SET claude_session_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![session_id, ts, id],
+    )?;
+    Ok(())
+}
+
+/// Store the most recent Stop/SubagentStop payload as a JSON string.
+/// Replaces the v4 on-disk result.json writeback.
+pub fn set_last_result(conn: &Connection, id: &str, payload_json: &str) -> Result<()> {
+    let ts = now();
+    conn.execute(
+        "UPDATE workspaces SET last_result = ?1, updated_at = ?2 WHERE id = ?3",
+        params![payload_json, ts, id],
+    )?;
+    Ok(())
 }
 
 pub fn clear_container_id(conn: &Connection, id: &str) -> Result<()> {

@@ -133,6 +133,15 @@ pub struct Workspace {
     /// Literal prompt the parent agent gave when delegating.
     #[serde(default)]
     pub delegation_prompt: Option<String>,
+    /// Claude session ID this workspace's spawned agent settled on.
+    /// Populated from injected-hook payloads so reviewers can do
+    /// `claude --resume <id>` directly.
+    #[serde(default)]
+    pub claude_session_id: Option<String>,
+    /// Most recent Stop/SubagentStop payload bunyan captured. JSON stored
+    /// as a string; exposed via GET /workspaces/:id/result.
+    #[serde(default)]
+    pub last_result: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

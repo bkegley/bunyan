@@ -67,6 +67,17 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_workspaces_parent ON workspaces(parent_workspace_id)",
     );
 
+    // Migrations: track the Claude session ID a spawned agent's session
+    // settled on (parsed from injected-hook payloads), and the most recent
+    // Stop/SubagentStop payload bunyan captured. This replaces the v4
+    // <worktree>/result.json writeback so we don't litter the git tree.
+    let _ = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN claude_session_id TEXT",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN last_result TEXT",
+    );
+
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,

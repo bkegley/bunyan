@@ -127,6 +127,8 @@ mod tests {
             updated_at: "t".to_string(),
             parent_workspace_id: None,
             delegation_prompt: None,
+            claude_session_id: None,
+            last_result: None,
         }
     }
 

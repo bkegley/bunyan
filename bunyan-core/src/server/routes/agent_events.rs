@@ -10,8 +10,16 @@
 //!   - Notification (claude is waiting for user input or timed out)
 //!   - SessionStart (claude session was created)
 //!
-//! The endpoint never errors on malformed input — we always store the raw
-//! body and respond 202 Accepted, because failing the hook would surface as
+//! State the endpoint persists onto the workspace row (SQLite, not the
+//! worktree on disk):
+//!   - `claude_session_id`: parsed from any payload that carries one
+//!     (typically SessionStart and every subsequent event). Reviewers
+//!     use this for `claude --resume <id>` follow-up.
+//!   - `last_result`: the most recent Stop/SubagentStop payload, JSON-
+//!     stringified. Surfaced via GET /workspaces/:id/result.
+//!
+//! The endpoint never errors on malformed input — we always store what we
+//! can and respond 202 Accepted, because failing the hook would surface as
 //! a noisy warning in the spawned Claude's session.
 
 use std::sync::Arc;
@@ -19,6 +27,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
+use crate::db;
 use crate::events;
 use crate::server::error::ApiError;
 use crate::state::AppState;
@@ -55,20 +64,28 @@ pub async fn agent_events(
         .unwrap_or("");
     let bunyan_event = map_claude_event(claude_event);
 
-    // Persist the most recent agent event as result.json for the observation
-    // surface. This is a deliberate convention: the spawned Claude doesn't
-    // need to write result.json — its Stop hook produces something that's
-    // "good enough" for a reviewer.
+    // Persist any session_id Claude reported. SessionStart is the first
+    // event that carries it, but Claude includes session_id on every hook
+    // payload, so we update every time — cheap and self-healing if a row
+    // was missing its session_id for any reason.
+    if let Some(session_id) = extract_session_id(&payload) {
+        let conn = state.db.lock().unwrap();
+        let _ = db::workspaces::set_claude_session_id(&conn, &id, &session_id);
+    }
+
+    // Persist Stop/SubagentStop payloads to the workspace row so reviewers
+    // can read them via GET /workspaces/:id/result. No filesystem writeback
+    // — keeps the worktree clean of bunyan-managed files.
     if claude_event == "Stop" || claude_event == "SubagentStop" {
-        let p = std::path::PathBuf::from(&ws_path).join("result.json");
-        let result_blob = serde_json::json!({
+        let blob = serde_json::json!({
             "status": "stopped",
             "hook_event_name": claude_event,
             "received_at": chrono::Utc::now().to_rfc3339(),
             "raw": payload,
         });
-        // Best-effort: failing here shouldn't fail the request.
-        let _ = std::fs::write(&p, serde_json::to_string_pretty(&result_blob).unwrap_or_default());
+        let blob_str = serde_json::to_string(&blob).unwrap_or_default();
+        let conn = state.db.lock().unwrap();
+        let _ = db::workspaces::set_last_result(&conn, &id, &blob_str);
     }
 
     // Fire a bunyan lifecycle event so user hooks (Slack, Tauri, etc.) get
@@ -109,6 +126,16 @@ fn claude_event_from_payload(p: &serde_json::Value) -> String {
         .to_string()
 }
 
+/// Pull the Claude session ID out of a hook payload. Claude includes
+/// `session_id` on every hook event it fires, so this works for Stop,
+/// SubagentStop, Notification, SessionStart, etc.
+fn extract_session_id(p: &serde_json::Value) -> Option<String> {
+    p.get("session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 /// Map Claude Code's hook event names to bunyan's dotted-lower convention.
 fn map_claude_event(name: &str) -> &'static str {
     match name {
@@ -145,5 +172,23 @@ mod tests {
     fn claude_event_from_payload_returns_field_value() {
         let v = serde_json::json!({"hook_event_name": "Stop"});
         assert_eq!(claude_event_from_payload(&v), "Stop");
+    }
+
+    #[test]
+    fn extract_session_id_returns_value_when_present() {
+        let v = serde_json::json!({"hook_event_name": "Stop", "session_id": "abc-123"});
+        assert_eq!(extract_session_id(&v), Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn extract_session_id_returns_none_when_missing() {
+        let v = serde_json::json!({"hook_event_name": "Stop"});
+        assert_eq!(extract_session_id(&v), None);
+    }
+
+    #[test]
+    fn extract_session_id_returns_none_when_empty() {
+        let v = serde_json::json!({"hook_event_name": "Stop", "session_id": ""});
+        assert_eq!(extract_session_id(&v), None);
     }
 }
